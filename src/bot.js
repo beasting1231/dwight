@@ -1,3 +1,7 @@
+// Suppress node-telegram-bot-api deprecation warnings
+process.env.NTBA_FIX_319 = 1;
+process.env.NTBA_FIX_350 = 1;
+
 import chalk from 'chalk';
 import readline from 'readline';
 import TelegramBot from 'node-telegram-bot-api';
@@ -11,13 +15,16 @@ import {
   decrementProcessing,
   getProcessingCount,
   getAndClearNotifications,
+  getAndClearPhotoNotifications,
+  getChatsWithPendingPhotos,
+  getRunningTasks,
   addToolLog,
   checkAndClearReload,
   markPendingEmailConfirmable,
   confirmPendingBashCommand,
 } from './state.js';
 import { getAIResponse } from './ai.js';
-import { drawUI, sleep } from './ui.js';
+import { drawUI, sleep, updateSpinner } from './ui.js';
 import {
   handleApiCommand,
   handleModelCommand,
@@ -27,6 +34,8 @@ import {
   handleClearCommand,
   handleEmailCommand,
   handleWebCommand,
+  handleImageCommand,
+  handleCalendarCommand,
   handleLogsCommand
 } from './cli.js';
 import { initializeTools, cleanupTools } from './tools/index.js';
@@ -208,6 +217,22 @@ export async function startBot(config) {
         await bot.sendMessage(chatId, notifMsg);
       }
 
+      // Send any pending photo notifications (from background image generation)
+      const photoNotifications = getAndClearPhotoNotifications(chatId);
+      for (const photo of photoNotifications) {
+        try {
+          await bot.sendPhoto(chatId, photo.buffer, {
+            caption: photo.caption,
+          }, {
+            filename: 'image.png',
+            contentType: 'image/png',
+          });
+        } catch (photoError) {
+          // Fallback: notify user of failure
+          await bot.sendMessage(chatId, 'Image was generated but failed to send. Please try again.');
+        }
+      }
+
       // Auto-reload config if memory was updated
       if (checkAndClearReload()) {
         Object.assign(config, loadConfig());
@@ -225,6 +250,43 @@ export async function startBot(config) {
 
   // Handle polling errors silently
   bot.on('polling_error', () => {});
+
+  // Proactive photo delivery: check for completed background tasks every 2 seconds
+  const photoCheckInterval = setInterval(async () => {
+    const chatsWithPhotos = getChatsWithPendingPhotos();
+    for (const chatId of chatsWithPhotos) {
+      const photos = getAndClearPhotoNotifications(chatId);
+      for (const photo of photos) {
+        try {
+          await bot.sendPhoto(chatId, photo.buffer, {
+            caption: photo.caption,
+          }, {
+            filename: 'image.png',
+            contentType: 'image/png',
+          });
+        } catch (error) {
+          // Photo send failed, notify user
+          await bot.sendMessage(chatId, 'Image was generated but failed to send. Please try again.').catch(() => {});
+        }
+      }
+    }
+  }, 2000);
+
+  // UI refresh: animate spinner for running tasks (in-place, no flicker)
+  let lastTaskCount = 0;
+  const uiRefreshInterval = setInterval(() => {
+    const runningTasks = getRunningTasks();
+    const taskCount = runningTasks.length;
+
+    // If task count changed, do full redraw
+    if (taskCount !== lastTaskCount) {
+      drawUI(config, getProcessingCount() > 0 ? 'processing' : 'online');
+      lastTaskCount = taskCount;
+    } else if (taskCount > 0) {
+      // Just update spinner in place
+      updateSpinner();
+    }
+  }, 150);
 
   // CLI command interface - wrapped in Promise to allow returning to menu
   await new Promise((resolve) => {
@@ -294,6 +356,30 @@ export async function startBot(config) {
           drawUI(config, 'online');
           break;
 
+        case 'image':
+          const imageChanged = await handleImageCommand(config, rl);
+          if (imageChanged) {
+            bot.stopPolling();
+            rl.close();
+            await sleep(300);
+            await startBot(loadConfig());
+            return;
+          }
+          drawUI(config, 'online');
+          break;
+
+        case 'calendar':
+          const calendarChanged = await handleCalendarCommand(config, rl);
+          if (calendarChanged) {
+            bot.stopPolling();
+            rl.close();
+            await sleep(300);
+            await startBot(loadConfig());
+            return;
+          }
+          drawUI(config, 'online');
+          break;
+
         case 'mode':
           await handleModeCommand(config, rl);
           drawUI(config, 'online');
@@ -319,6 +405,8 @@ export async function startBot(config) {
         case 'quit':
         case 'exit':
         case 'back':
+          clearInterval(photoCheckInterval);
+          clearInterval(uiRefreshInterval);
           bot.stopPolling();
           rl.close();
           resolve(); // Return to main menu

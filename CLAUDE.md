@@ -17,14 +17,28 @@ src/
 ├── onboarding.js   # Setup wizard
 └── tools/          # AI tools directory
     ├── index.js    # Tool registry and executor
-    └── email/      # Email tool
+    ├── email/      # Email tool
+    │   ├── index.js    # Tool definitions and exports
+    │   ├── client.js   # IMAP/SMTP client
+    │   ├── actions.js  # Email operations
+    │   └── setup.js    # Email setup wizard
+    ├── web/        # Web search tool (Brave Search API)
+    │   ├── index.js    # Tool definitions and exports
+    │   ├── client.js   # Brave Search API client
+    │   ├── actions.js  # Search and fetch operations
+    │   ├── cache.js    # 15-minute result cache
+    │   └── setup.js    # API key setup wizard
+    └── image/      # Image generation tool (Gemini/Nano Banana Pro)
         ├── index.js    # Tool definitions and exports
-        ├── client.js   # IMAP/SMTP client
-        ├── actions.js  # Email operations
-        └── setup.js    # Email setup wizard
+        ├── client.js   # Google GenAI API client
+        ├── actions.js  # Background image generation
+        └── setup.js    # API key setup wizard
 
 scripts/
 └── email-watcher.js  # Standalone email notification script
+
+images/                 # Generated images (gitignored)
+└── {chatId}_{type}_{timestamp}.png  # Auto-saved images with metadata
 
 memory/
 ├── soul.md           # Dwight's personality, rules, and guidelines
@@ -36,7 +50,9 @@ tests/
 ├── state.test.js
 ├── config.test.js
 ├── ai.test.js
-└── email.test.js
+├── email.test.js
+├── web.test.js
+└── image.test.js
 ```
 
 ## Rules for Claude Code

@@ -3,9 +3,12 @@ import inquirer from 'inquirer';
 import { execSync } from 'child_process';
 import { loadConfig, saveConfig, loadStoredKeys, saveApiKey, getFileMode, setFileMode } from './config.js';
 import { MODELS } from './models.js';
-import { clearConversations, clearVerifiedUsers, getTokenCount, getToolLog } from './state.js';
+import { clearConversations, clearVerifiedUsers, getTokenCount, getToolLog, addToolLog } from './state.js';
 import { drawUI } from './ui.js';
 import { setupEmail } from './tools/email/setup.js';
+import { setupWeb } from './tools/web/setup.js';
+import { setupImage } from './tools/image/setup.js';
+import { setupCalendar } from './tools/calendar/setup.js';
 
 export async function handleApiCommand(config, rl) {
   rl.pause();
@@ -178,6 +181,9 @@ export function handleHelpCommand(config) {
   console.log(chalk.yellow('  model   ') + chalk.gray('Change AI model'));
   console.log(chalk.yellow('  mode    ') + chalk.gray('Set file operation permission mode'));
   console.log(chalk.yellow('  email   ') + chalk.gray('Configure email integration'));
+  console.log(chalk.yellow('  web     ') + chalk.gray('Configure web search (Brave Search)'));
+  console.log(chalk.yellow('  image   ') + chalk.gray('Configure image generation (Gemini)'));
+  console.log(chalk.yellow('  calendar') + chalk.gray(' Configure Google Calendar'));
   console.log(chalk.yellow('  status  ') + chalk.gray('Show current config'));
   console.log(chalk.yellow('  logs    ') + chalk.gray('Copy tool logs to clipboard'));
   console.log(chalk.yellow('  clear   ') + chalk.gray('Clear conversation context'));
@@ -278,20 +284,63 @@ export async function handleEmailCommand(config, rl) {
   }
 }
 
+export async function handleWebCommand(config, rl) {
+  rl.pause();
+  try {
+    const restart = await setupWeb();
+    rl.resume();
+    return restart; // Restart if config changed
+  } catch (e) {
+    rl.resume();
+    return false;
+  }
+}
+
+export async function handleImageCommand(config, rl) {
+  rl.pause();
+  try {
+    const restart = await setupImage();
+    rl.resume();
+    return restart; // Restart if config changed
+  } catch (e) {
+    rl.resume();
+    return false;
+  }
+}
+
+export async function handleCalendarCommand(config, rl) {
+  rl.pause();
+  try {
+    const restart = await setupCalendar();
+    rl.resume();
+    return restart; // Restart if config changed
+  } catch (e) {
+    rl.resume();
+    return false;
+  }
+}
+
 export function handleStatusCommand(config) {
   const currentConfig = loadConfig();
   const fileMode = getFileMode();
+  const webEnabled = currentConfig?.web?.enabled && currentConfig?.web?.braveApiKey;
+  const imageEnabled = currentConfig?.image?.enabled !== false && currentConfig?.image?.googleApiKey;
+  const calendarEnabled = currentConfig?.calendar?.enabled && currentConfig?.calendar?.tokens?.access_token;
   drawUI(config, 'online');
   console.log(chalk.gray('  Provider:    ') + chalk.yellow(currentConfig.ai?.provider || 'none'));
   console.log(chalk.gray('  Model:       ') + chalk.white(currentConfig.ai?.model || 'none'));
   console.log(chalk.gray('  Context:     ') + chalk.white(getTokenCount().toLocaleString() + ' tokens'));
   console.log(chalk.gray('  Temperature: ') + chalk.white(currentConfig.ai?.temperature ?? 0.7));
   console.log(chalk.gray('  File Mode:   ') + chalk.white(fileMode === 'auto' ? 'Auto' : 'Ask'));
+  console.log(chalk.gray('  Web Search:  ') + (webEnabled ? chalk.green('Enabled') : chalk.gray('Not configured')));
+  console.log(chalk.gray('  Image Gen:   ') + (imageEnabled ? chalk.green('Enabled') : chalk.gray('Not configured')));
+  console.log(chalk.gray('  Calendar:    ') + (calendarEnabled ? chalk.green('Enabled') : chalk.gray('Not configured')));
   console.log('');
 }
 
 export function handleClearCommand(config) {
   clearConversations();
   clearVerifiedUsers();
+  addToolLog({ tool: 'clear', status: 'success', detail: 'context cleared' });
   drawUI(config, 'online');
 }

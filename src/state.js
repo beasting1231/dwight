@@ -131,9 +131,136 @@ export function checkAndClearReload() {
   return result;
 }
 
+// Background tasks for async operations (image generation, etc.)
+const backgroundTasks = new Map();
+let taskIdCounter = 0;
+
+// Pending photo notifications (chatId -> [{ buffer, caption, timestamp }])
+const pendingPhotos = new Map();
+
+// Last generated image per chat (for subsequent edits)
+const lastGeneratedImage = new Map();
+
+/**
+ * Create a background task
+ * @param {string|number} chatId - Chat to notify when complete
+ * @param {string} type - Task type (e.g., 'image_generate')
+ * @param {Object} metadata - Additional task data
+ * @returns {string} Task ID
+ */
+export function createBackgroundTask(chatId, type, metadata = {}) {
+  const taskId = `task_${++taskIdCounter}_${Date.now()}`;
+  backgroundTasks.set(taskId, {
+    type,
+    chatId,
+    status: 'pending',
+    result: null,
+    error: null,
+    metadata,
+    startedAt: Date.now(),
+  });
+  return taskId;
+}
+
+/**
+ * Update a background task
+ * @param {string} taskId - Task ID
+ * @param {Object} updates - Fields to update
+ */
+export function updateBackgroundTask(taskId, updates) {
+  const task = backgroundTasks.get(taskId);
+  if (task) {
+    Object.assign(task, updates);
+  }
+}
+
+/**
+ * Get a background task by ID
+ * @param {string} taskId - Task ID
+ * @returns {Object|undefined}
+ */
+export function getBackgroundTask(taskId) {
+  return backgroundTasks.get(taskId);
+}
+
+/**
+ * Queue a photo notification for a chat
+ * @param {string|number} chatId - Chat ID
+ * @param {Buffer} buffer - Image buffer
+ * @param {string} caption - Photo caption
+ */
+export function addPhotoNotification(chatId, buffer, caption = '') {
+  if (!pendingPhotos.has(chatId)) {
+    pendingPhotos.set(chatId, []);
+  }
+  pendingPhotos.get(chatId).push({ buffer, caption, timestamp: Date.now() });
+}
+
+/**
+ * Get and clear photo notifications for a chat
+ * @param {string|number} chatId - Chat ID
+ * @returns {Array} Pending photos
+ */
+export function getAndClearPhotoNotifications(chatId) {
+  const photos = pendingPhotos.get(chatId) || [];
+  pendingPhotos.delete(chatId);
+  return photos;
+}
+
+/**
+ * Get all chats with pending photos
+ * @returns {Array} Chat IDs with pending photos
+ */
+export function getChatsWithPendingPhotos() {
+  return Array.from(pendingPhotos.keys());
+}
+
+/**
+ * Cleanup old background tasks (older than maxAge)
+ * @param {number} maxAge - Max age in ms (default 30 minutes)
+ */
+export function cleanupBackgroundTasks(maxAge = 30 * 60 * 1000) {
+  const now = Date.now();
+  for (const [taskId, task] of backgroundTasks.entries()) {
+    if (now - task.startedAt > maxAge) {
+      backgroundTasks.delete(taskId);
+    }
+  }
+}
+
+/**
+ * Store the last generated image for a chat (for subsequent edits)
+ * @param {string|number} chatId - Chat ID
+ * @param {Buffer} buffer - Image buffer
+ */
+export function setLastGeneratedImage(chatId, buffer) {
+  lastGeneratedImage.set(chatId, {
+    buffer,
+    timestamp: Date.now(),
+  });
+}
+
+/**
+ * Get the last generated image for a chat
+ * @param {string|number} chatId - Chat ID
+ * @returns {Buffer|null}
+ */
+export function getLastGeneratedImage(chatId) {
+  const entry = lastGeneratedImage.get(chatId);
+  // Expire after 30 minutes
+  if (entry && Date.now() - entry.timestamp > 30 * 60 * 1000) {
+    lastGeneratedImage.delete(chatId);
+    return null;
+  }
+  return entry?.buffer || null;
+}
+
 // Tool call log (persistent)
 const toolLog = [];
 const MAX_TOOL_LOG = 50;
+
+// Currently running tasks (for animated display)
+const runningTasks = new Map();
 
 export function addToolLog(entry) {
   toolLog.push({
@@ -144,6 +271,33 @@ export function addToolLog(entry) {
   if (toolLog.length > MAX_TOOL_LOG) {
     toolLog.shift();
   }
+}
+
+/**
+ * Add a running task (for animated display)
+ */
+export function addRunningTask(id, description) {
+  runningTasks.set(id, {
+    description,
+    startedAt: Date.now(),
+  });
+}
+
+/**
+ * Remove a running task
+ */
+export function removeRunningTask(id) {
+  runningTasks.delete(id);
+}
+
+/**
+ * Get all running tasks
+ */
+export function getRunningTasks() {
+  return Array.from(runningTasks.entries()).map(([id, task]) => ({
+    id,
+    ...task,
+  }));
 }
 
 export function getToolLog() {

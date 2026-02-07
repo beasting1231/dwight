@@ -3,6 +3,9 @@ import { memoryTools, executeMemoryTool } from './memory/index.js';
 import { datetimeTools, executeDatetimeTool } from './datetime/index.js';
 import { fileTools, executeFileTool } from './files/index.js';
 import { bashTools, executeBashTool } from './bash/index.js';
+import { webTools, executeWebTool, isWebConfigured } from './web/index.js';
+import { imageTools, executeImageTool, isImageConfigured } from './image/index.js';
+import { calendarTools, executeCalendarTool, isCalendarConfigured } from './calendar/index.js';
 
 /**
  * All available tools for the AI
@@ -13,6 +16,9 @@ export const allTools = [
   ...datetimeTools,
   ...fileTools,
   ...bashTools,
+  ...webTools,
+  ...imageTools,
+  ...calendarTools,
 ];
 
 /**
@@ -47,6 +53,15 @@ const toolExecutors = {
   bash_run: (params, ctx) => executeBashTool('bash_run', params, ctx),
   bash_pwd: (params, ctx) => executeBashTool('bash_pwd', params, ctx),
   bash_cd: (params, ctx) => executeBashTool('bash_cd', params, ctx),
+  web_search: (params) => executeWebTool('web_search', params),
+  web_fetch: (params) => executeWebTool('web_fetch', params),
+  image_generate: (params, ctx) => executeImageTool('image_generate', params, ctx),
+  image_edit: (params, ctx) => executeImageTool('image_edit', params, ctx),
+  image_list: (params, ctx) => executeImageTool('image_list', params, ctx),
+  calendar_list: (params) => executeCalendarTool('calendar_list', params),
+  calendar_create: (params) => executeCalendarTool('calendar_create', params),
+  calendar_update: (params) => executeCalendarTool('calendar_update', params),
+  calendar_delete: (params) => executeCalendarTool('calendar_delete', params),
 };
 
 // Current chat context for tools that need it
@@ -88,6 +103,9 @@ export function getToolsByCategory(category) {
 export async function initializeTools() {
   const results = {
     email: await initializeEmail(),
+    web: { success: isWebConfigured() },
+    image: { success: isImageConfigured() },
+    calendar: { success: isCalendarConfigured() },
   };
   return results;
 }
