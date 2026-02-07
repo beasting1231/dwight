@@ -1,14 +1,11 @@
-# User Profile
-
-## Basic Information
-
 - Name: peter
 - Location: osaka
 - Timezone: Asia/Tokyo
 
 ## Preferences
 
-- short concise answers only. no fluff of being too polite. i dont like reading long messages. keep it to a 2 senteces max and less if possble. and ONLY IF ABSOLUTELY necesary you can writ elonger messages
+- short concise answers only. no fluff of being too polite. i dont like reading long messages. keep it to 2 senteces max and less if possble. and ONLY IF ABSOLUTELY necesary you can writ elonger messages
+- anytime you list fiiles for me i want them to be in a bulleted list
 
 ## Important Notes
 

@@ -2,6 +2,7 @@ import { emailTools, executeEmailTool, initializeEmail, cleanupEmail } from './e
 import { memoryTools, executeMemoryTool } from './memory/index.js';
 import { datetimeTools, executeDatetimeTool } from './datetime/index.js';
 import { fileTools, executeFileTool } from './files/index.js';
+import { bashTools, executeBashTool } from './bash/index.js';
 
 /**
  * All available tools for the AI
@@ -11,6 +12,7 @@ export const allTools = [
   ...memoryTools,
   ...datetimeTools,
   ...fileTools,
+  ...bashTools,
 ];
 
 /**
@@ -29,6 +31,9 @@ const toolExecutors = {
   contacts_lookup: (params) => executeMemoryTool('contacts_lookup', params),
   contacts_add: (params) => executeMemoryTool('contacts_add', params),
   contacts_update: (params) => executeMemoryTool('contacts_update', params),
+  todo_list: (params) => executeMemoryTool('todo_list', params),
+  todo_add: (params) => executeMemoryTool('todo_add', params),
+  todo_done: (params) => executeMemoryTool('todo_done', params),
   datetime_now: (params) => executeDatetimeTool('datetime_now', params),
   file_read: (params) => executeFileTool('file_read', params),
   file_write: (params) => executeFileTool('file_write', params),
@@ -39,6 +44,9 @@ const toolExecutors = {
   file_copy: (params) => executeFileTool('file_copy', params),
   file_move: (params) => executeFileTool('file_move', params),
   file_info: (params) => executeFileTool('file_info', params),
+  bash_run: (params, ctx) => executeBashTool('bash_run', params, ctx),
+  bash_pwd: (params, ctx) => executeBashTool('bash_pwd', params, ctx),
+  bash_cd: (params, ctx) => executeBashTool('bash_cd', params, ctx),
 };
 
 // Current chat context for tools that need it

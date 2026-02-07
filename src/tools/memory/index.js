@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { getFileMode } from '../../config.js';
+import { getFileMode, getBashMode } from '../../config.js';
 import { addNotification, setNeedsReload } from '../../state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -162,6 +162,42 @@ export const memoryTools = [
       required: ['name'],
     },
   },
+  {
+    name: 'todo_list',
+    description: 'Show all tasks on the to-do list.',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'todo_add',
+    description: 'Add a task to the to-do list.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'The task to add',
+        },
+      },
+      required: ['task'],
+    },
+  },
+  {
+    name: 'todo_done',
+    description: 'Remove a completed task from the to-do list.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'The task to remove (or part of it to match)',
+        },
+      },
+      required: ['task'],
+    },
+  },
 ];
 
 /**
@@ -243,6 +279,9 @@ export function appendToUserMemory(section, content) {
 
 // Contacts file path (separate from core memory)
 const CONTACTS_FILE = path.join(MEMORY_DIR, 'contacts.md');
+
+// Todo file path (separate from core memory)
+const TODO_FILE = path.join(MEMORY_DIR, 'todo.md');
 
 /**
  * Read contacts file (on-demand, not loaded at startup)
@@ -366,6 +405,117 @@ export function updateContact({ name, newName, email, phone, notes }) {
   return { success: true, message: `Updated contact: ${newName || name}` };
 }
 
+// ============ TODO FUNCTIONS ============
+
+/**
+ * Read todo file (on-demand, not loaded at startup)
+ */
+function readTodo() {
+  try {
+    if (fs.existsSync(TODO_FILE)) {
+      return fs.readFileSync(TODO_FILE, 'utf-8');
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Write todo file
+ */
+function writeTodo(content) {
+  if (!fs.existsSync(MEMORY_DIR)) {
+    fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  }
+  fs.writeFileSync(TODO_FILE, content, 'utf-8');
+}
+
+/**
+ * Parse tasks from todo markdown
+ */
+function parseTodo(content) {
+  const tasks = [];
+  const lines = content.split('\n');
+
+  for (const line of lines) {
+    // Match lines that start with "- " (task items)
+    if (line.trim().startsWith('- ')) {
+      const task = line.trim().substring(2).trim();
+      if (task && !task.startsWith('<!--')) {
+        tasks.push(task);
+      }
+    }
+  }
+
+  return tasks;
+}
+
+/**
+ * Format tasks to markdown
+ */
+function formatTodo(tasks) {
+  let md = '# To-Do List\n\n---\n\n';
+  if (tasks.length === 0) {
+    md += '<!-- No tasks yet -->\n';
+  } else {
+    for (const task of tasks) {
+      md += `- ${task}\n`;
+    }
+  }
+  return md;
+}
+
+/**
+ * List all tasks
+ */
+export function listTodos() {
+  const content = readTodo();
+  const tasks = parseTodo(content);
+  return tasks;
+}
+
+/**
+ * Add a task to the list
+ */
+export function addTodo(task) {
+  const content = readTodo();
+  const tasks = parseTodo(content);
+
+  // Check for duplicates (case-insensitive)
+  const exists = tasks.some(t => t.toLowerCase() === task.toLowerCase());
+  if (exists) {
+    return { error: `Task "${task}" is already on the list.` };
+  }
+
+  tasks.push(task);
+  writeTodo(formatTodo(tasks));
+  addNotification(`todo added ✓`);
+
+  return { success: true, message: `Added: ${task}`, totalTasks: tasks.length };
+}
+
+/**
+ * Remove a task from the list (fuzzy match)
+ */
+export function removeTodo(taskQuery) {
+  const content = readTodo();
+  const tasks = parseTodo(content);
+  const search = taskQuery.toLowerCase();
+
+  // Find matching task (partial match)
+  const idx = tasks.findIndex(t => t.toLowerCase().includes(search));
+  if (idx === -1) {
+    return { error: `No task found matching "${taskQuery}"` };
+  }
+
+  const removed = tasks.splice(idx, 1)[0];
+  writeTodo(formatTodo(tasks));
+  addNotification(`todo done ✓`);
+
+  return { success: true, message: `Completed: ${removed}`, remainingTasks: tasks.length };
+}
+
 /**
  * Load all memory files for context (excludes contacts - loaded on demand)
  */
@@ -423,6 +573,39 @@ export function buildSystemPromptWithMemory(basePrompt) {
     prompt += '- You may read files and list directories without asking.\n';
     prompt += '- Example: "I\'d like to create a file at /path/file.txt with [content]. Should I proceed?"';
   }
+
+  // Add bash operation mode instructions
+  const bashMode = getBashMode();
+  prompt += '\n\n---\n\n# BASH COMMAND MODE\n\n';
+  if (bashMode === 'auto') {
+    prompt += 'You are in AUTO mode for bash commands.\n';
+    prompt += '- Execute bash commands immediately without asking for permission (except blocked commands).\n';
+    prompt += '- Dangerous commands (sudo, rm -rf, etc.) are still blocked or require confirmation.\n';
+  } else {
+    prompt += 'You are in ASK mode for bash commands.\n';
+    prompt += '- Before running potentially dangerous commands, explain what you want to do and ask permission.\n';
+    prompt += '- Safe commands (ls, pwd, git status, etc.) can run without asking.\n';
+  }
+
+  prompt += '\n\nBASH TOOL GUIDELINES:\n';
+  prompt += '\n**OPENING FILES/APPS (macOS):**\n';
+  prompt += '- User says "open X" → use bash_run with command "open <path>"\n';
+  prompt += '- "open file.txt" opens in default app\n';
+  prompt += '- "open ." opens Finder in current directory\n';
+  prompt += '- "open -a Safari https://url" opens URL in Safari\n';
+  prompt += '- This is DIFFERENT from file_read (which shows YOU the content)\n';
+  prompt += '\n**PREFER dedicated file tools over bash:**\n';
+  prompt += '- file_read instead of cat/head/tail (to see contents yourself)\n';
+  prompt += '- file_write instead of echo > (to write files)\n';
+  prompt += '- file_edit instead of sed -i (to edit files)\n';
+  prompt += '- file_search instead of grep (to search)\n';
+  prompt += '\n**USE bash_run for:**\n';
+  prompt += '- Opening files/folders for the user: open <path>\n';
+  prompt += '- Build commands: npm, yarn, make\n';
+  prompt += '- Git operations: git status, commit, push\n';
+  prompt += '- Running scripts: python, node\n';
+  prompt += '- Package management: npm install, brew, pip\n';
+  prompt += '\nWorking directory persists. Interactive commands (vim, less) NOT supported.\n';
 
   // Path resolution instructions
   prompt += '\n\n---\n\n# PATH RESOLUTION & FUZZY MATCHING\n\n';
@@ -512,6 +695,19 @@ export async function executeMemoryTool(toolName, params) {
 
       case 'contacts_update':
         return updateContact(params);
+
+      case 'todo_list':
+        const todos = listTodos();
+        if (todos.length === 0) {
+          return { tasks: [], message: 'Your to-do list is empty.' };
+        }
+        return { tasks: todos, count: todos.length };
+
+      case 'todo_add':
+        return addTodo(params.task);
+
+      case 'todo_done':
+        return removeTodo(params.task);
 
       default:
         return { error: `Unknown memory tool: ${toolName}` };

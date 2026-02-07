@@ -115,3 +115,22 @@ export function setFileMode(mode) {
   config.fileMode = mode;
   saveConfig(config);
 }
+
+/**
+ * Get the current bash operation mode
+ * @returns {'ask' | 'auto'} The current mode
+ */
+export function getBashMode() {
+  const config = loadConfig();
+  return config?.bashMode || 'ask';
+}
+
+/**
+ * Set the bash operation mode
+ * @param {'ask' | 'auto'} mode - The mode to set
+ */
+export function setBashMode(mode) {
+  const config = loadConfig() || {};
+  config.bashMode = mode;
+  saveConfig(config);
+}
