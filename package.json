@@ -1,0 +1,39 @@
+{
+  "name": "dwight",
+  "version": "1.0.0",
+  "description": "AI-powered Telegram bot CLI",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "dwight": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "ai",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "boxen": "^7.1.1",
+    "chalk": "^5.3.0",
+    "gradient-string": "^2.0.2",
+    "imapflow": "^1.2.9",
+    "inquirer": "^9.2.12",
+    "mailparser": "^3.9.3",
+    "node-telegram-bot-api": "^0.67.0",
+    "nodemailer": "^8.0.0",
+    "ora": "^8.0.1"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0"
+  }
+}
