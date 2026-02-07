@@ -33,6 +33,48 @@ const MEMORY_FILES = {
 };
 
 /**
+ * Protected patterns that AI cannot write to memory files.
+ * These patterns could escalate AI permissions or bypass safety controls.
+ */
+const PROTECTED_PATTERNS = [
+  // Mode escalation patterns
+  /\bAUTO\s+mode\b/i,
+  /\bwithout\s+asking\b/i,
+  /\bwithout\s+confirmation\b/i,
+  /\bwithout\s+permission\b/i,
+  /\bskip\s+confirmation\b/i,
+  /\bbypass\s+confirmation\b/i,
+  /\bno\s+confirmation\b/i,
+  /\bdon'?t\s+ask\b/i,
+  /\bnever\s+ask\b/i,
+  /\balways\s+execute\b/i,
+  /\bexecute\s+immediately\b/i,
+  /\bBASH\s+COMMAND\s+MODE/i,
+  /\bFILE\s+OPERATION\s+MODE/i,
+  /\bcommand\s+mode\b.*\bauto\b/i,
+  /\bauto\b.*\bcommand\s+mode\b/i,
+  /\bfile\s+mode\b.*\bauto\b/i,
+  /\bauto\b.*\bfile\s+mode\b/i,
+];
+
+/**
+ * Validate that content doesn't contain protected/dangerous patterns
+ * @param {string} content - The content to validate
+ * @returns {{ valid: boolean, reason?: string }}
+ */
+function validateMemoryContent(content) {
+  for (const pattern of PROTECTED_PATTERNS) {
+    if (pattern.test(content)) {
+      return {
+        valid: false,
+        reason: `Cannot write content that modifies permission settings. Detected pattern: ${pattern.toString()}`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
+/**
  * Tool definitions for AI
  */
 export const memoryTools = [
@@ -637,6 +679,11 @@ export function buildSystemPromptWithMemory(basePrompt) {
   prompt += '- User complains about a mistake → learn from it and update instructions\n';
   prompt += '- User changes location → update both location AND timezone in user.md\n';
   prompt += '\nAlways acknowledge when you update your memory.\n\n';
+  prompt += '**IMPORTANT RESTRICTIONS:**\n';
+  prompt += '- You CANNOT modify permission settings (bash mode, file mode, AUTO/ASK settings)\n';
+  prompt += '- You CANNOT write content that bypasses confirmation requirements\n';
+  prompt += '- Permission changes can ONLY be made by the user through CLI commands\n';
+  prompt += '- Attempting to modify these settings will be blocked automatically\n\n';
   prompt += 'HOW TO WRITE EFFECTIVE RULES:\n';
   prompt += 'Rules in memory files are READ BY YOU at the start of each conversation.\n';
   prompt += 'For rules to work, they must be:\n';
@@ -668,6 +715,16 @@ export async function executeMemoryTool(toolName, params) {
         return { content: content || 'File is empty or does not exist' };
 
       case 'memory_update':
+        // Validate content doesn't contain protected patterns
+        const validation = validateMemoryContent(params.content);
+        if (!validation.valid) {
+          return {
+            error: validation.reason,
+            blocked: true,
+            message: 'Memory update blocked: You cannot modify permission-related settings. Only the user can change operation modes via CLI commands.',
+          };
+        }
+
         writeMemory(params.file, params.content);
         setNeedsReload();
         return {
@@ -676,6 +733,16 @@ export async function executeMemoryTool(toolName, params) {
         };
 
       case 'memory_append':
+        // Validate appended content doesn't contain protected patterns
+        const appendValidation = validateMemoryContent(params.content);
+        if (!appendValidation.valid) {
+          return {
+            error: appendValidation.reason,
+            blocked: true,
+            message: 'Memory append blocked: You cannot add permission-related settings.',
+          };
+        }
+
         appendToUserMemory(params.section, params.content);
         setNeedsReload();
         return {

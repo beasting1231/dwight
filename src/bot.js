@@ -13,7 +13,8 @@ import {
   getAndClearNotifications,
   addToolLog,
   checkAndClearReload,
-  markPendingEmailConfirmable
+  markPendingEmailConfirmable,
+  confirmPendingBashCommand,
 } from './state.js';
 import { getAIResponse } from './ai.js';
 import { drawUI, sleep } from './ui.js';
@@ -25,6 +26,7 @@ import {
   handleStatusCommand,
   handleClearCommand,
   handleEmailCommand,
+  handleWebCommand,
   handleLogsCommand
 } from './cli.js';
 import { initializeTools, cleanupTools } from './tools/index.js';
@@ -171,6 +173,9 @@ export async function startBot(config) {
     // Mark any pending email as confirmable (user has now responded)
     markPendingEmailConfirmable(chatId);
 
+    // Mark any pending bash command as confirmed (user has now responded)
+    confirmPendingBashCommand(chatId);
+
     // Update UI to processing
     incrementProcessing();
     drawUI(config, 'processing');
@@ -268,6 +273,18 @@ export async function startBot(config) {
         case 'email':
           const emailChanged = await handleEmailCommand(config, rl);
           if (emailChanged) {
+            bot.stopPolling();
+            rl.close();
+            await sleep(300);
+            await startBot(loadConfig());
+            return;
+          }
+          drawUI(config, 'online');
+          break;
+
+        case 'web':
+          const webChanged = await handleWebCommand(config, rl);
+          if (webChanged) {
             bot.stopPolling();
             rl.close();
             await sleep(300);

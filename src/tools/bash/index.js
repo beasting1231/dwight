@@ -17,7 +17,12 @@ import {
   config,
 } from './executor.js';
 import { getBashMode } from '../../config.js';
-import { addNotification } from '../../state.js';
+import {
+  addNotification,
+  setPendingBashCommand,
+  isBashCommandConfirmed,
+  clearPendingBashCommand,
+} from '../../state.js';
 
 /**
  * Tool definition for AI
@@ -150,15 +155,31 @@ async function runBashCommand(params, context) {
 
   // Check bash mode for 'ask' decisions
   const bashMode = getBashMode();
+  const chatId = context?.chatId;
+
   if (securityResult.decision === 'ask' && bashMode === 'ask') {
-    // In a real implementation, this would prompt the user
-    // For now, we'll include the reason and let the AI/user decide
-    return {
-      requiresConfirmation: true,
-      reason: securityResult.reason,
-      command: command,
-      message: `This command requires confirmation: ${securityResult.reason}. Set bash mode to 'auto' or confirm to proceed.`,
-    };
+    // Check if this exact command has already been confirmed by the user
+    if (chatId && isBashCommandConfirmed(chatId, command)) {
+      // User confirmed, clear the pending command and proceed with execution
+      clearPendingBashCommand(chatId);
+      // Fall through to execute the command below
+    } else {
+      // Store the pending command for confirmation tracking
+      if (chatId) {
+        setPendingBashCommand(chatId, {
+          command,
+          reason: securityResult.reason,
+          description: description,
+        });
+      }
+
+      return {
+        requiresConfirmation: true,
+        reason: securityResult.reason,
+        command: command,
+        message: `This command requires confirmation: ${securityResult.reason}. Please confirm you want to proceed.`,
+      };
+    }
   }
 
   // Log the command

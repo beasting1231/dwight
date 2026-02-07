@@ -6,7 +6,12 @@ import {
   getProcessingCount,
   clearConversations,
   clearVerifiedUsers,
-  getTokenCount
+  getTokenCount,
+  setPendingBashCommand,
+  getPendingBashCommand,
+  confirmPendingBashCommand,
+  isBashCommandConfirmed,
+  clearPendingBashCommand,
 } from '../src/state.js';
 
 describe('state', () => {
@@ -119,6 +124,75 @@ describe('state', () => {
       conversations.set(1, [{ role: 'user', content: '' }]);
       conversations.set(2, [{ role: 'user' }]); // no content property
       expect(getTokenCount()).toBe(0);
+    });
+  });
+
+  describe('pending bash commands', () => {
+    const chatId = 12345;
+    const testCommand = {
+      command: 'npm install -g typescript',
+      reason: 'Installing global npm packages',
+      description: 'Install TypeScript globally',
+    };
+
+    beforeEach(() => {
+      clearPendingBashCommand(chatId);
+    });
+
+    it('should set a pending bash command', () => {
+      setPendingBashCommand(chatId, testCommand);
+      const pending = getPendingBashCommand(chatId);
+      expect(pending).toBeDefined();
+      expect(pending.command).toBe(testCommand.command);
+      expect(pending.reason).toBe(testCommand.reason);
+      expect(pending.confirmed).toBe(false);
+    });
+
+    it('should return null for non-existent pending command', () => {
+      const pending = getPendingBashCommand(99999);
+      expect(pending).toBeNull();
+    });
+
+    it('should confirm a pending command', () => {
+      setPendingBashCommand(chatId, testCommand);
+      const confirmed = confirmPendingBashCommand(chatId);
+      expect(confirmed).toBe(true);
+
+      const pending = getPendingBashCommand(chatId);
+      expect(pending.confirmed).toBe(true);
+    });
+
+    it('should not confirm twice', () => {
+      setPendingBashCommand(chatId, testCommand);
+      confirmPendingBashCommand(chatId);
+      const secondConfirm = confirmPendingBashCommand(chatId);
+      expect(secondConfirm).toBe(false);
+    });
+
+    it('should check if command is confirmed', () => {
+      setPendingBashCommand(chatId, testCommand);
+
+      // Not confirmed yet
+      expect(isBashCommandConfirmed(chatId, testCommand.command)).toBe(false);
+
+      // After confirmation
+      confirmPendingBashCommand(chatId);
+      expect(isBashCommandConfirmed(chatId, testCommand.command)).toBe(true);
+
+      // Wrong command
+      expect(isBashCommandConfirmed(chatId, 'different command')).toBe(false);
+    });
+
+    it('should clear pending command', () => {
+      setPendingBashCommand(chatId, testCommand);
+      clearPendingBashCommand(chatId);
+      const pending = getPendingBashCommand(chatId);
+      expect(pending).toBeNull();
+    });
+
+    it('should return false when confirming non-existent command', () => {
+      const confirmed = confirmPendingBashCommand(99999);
+      expect(confirmed).toBe(false);
     });
   });
 });
