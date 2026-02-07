@@ -235,6 +235,13 @@ export async function executeEmailTool(toolName, params, ctx = {}) {
         });
 
       case 'email_draft':
+        // Check if "to" is a valid email address
+        if (!params.to.includes('@')) {
+          return {
+            error: `"${params.to}" is not an email address. Use contacts_lookup tool first to find their email, then call email_draft with the actual email address.`
+          };
+        }
+
         // Store the email as pending, return draft for user review
         const chatId = ctx?.chatId || 'default';
         console.log('[email_draft] chatId:', chatId);
@@ -256,11 +263,12 @@ export async function executeEmailTool(toolName, params, ctx = {}) {
       case 'email_confirm':
         // Send the pending email
         const confirmChatId = ctx?.chatId || 'default';
-        console.log('[email_confirm] chatId:', confirmChatId);
         const pending = getPendingEmail(confirmChatId);
-        console.log('[email_confirm] pending:', pending ? 'found' : 'NOT FOUND');
         if (!pending) {
-          return { error: `No pending email to send (chatId: ${confirmChatId}). Use email_draft first to create a draft.` };
+          return { error: 'No pending email. Use email_draft first.' };
+        }
+        if (!pending.userConfirmed) {
+          return { error: 'Cannot send yet. You must show the draft to user and wait for their confirmation message before calling email_confirm.' };
         }
         clearPendingEmail(confirmChatId);
         return await sendEmail({

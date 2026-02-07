@@ -28,8 +28,9 @@ let needsReload = false;
 // Pending emails awaiting confirmation (chatId -> email details)
 const pendingEmails = new Map();
 
+// Track if user has responded since draft was created
 export function setPendingEmail(chatId, emailData) {
-  pendingEmails.set(chatId, { ...emailData, timestamp: Date.now() });
+  pendingEmails.set(chatId, { ...emailData, timestamp: Date.now(), userConfirmed: false });
 }
 
 export function getPendingEmail(chatId) {
@@ -40,6 +41,13 @@ export function getPendingEmail(chatId) {
     return null;
   }
   return pending;
+}
+
+export function markPendingEmailConfirmable(chatId) {
+  const pending = pendingEmails.get(chatId);
+  if (pending) {
+    pending.userConfirmed = true;
+  }
 }
 
 export function clearPendingEmail(chatId) {

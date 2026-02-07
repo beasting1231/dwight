@@ -12,7 +12,8 @@ import {
   getProcessingCount,
   getAndClearNotifications,
   addToolLog,
-  checkAndClearReload
+  checkAndClearReload,
+  markPendingEmailConfirmable
 } from './state.js';
 import { getAIResponse } from './ai.js';
 import { drawUI, sleep } from './ui.js';
@@ -166,6 +167,9 @@ export async function startBot(config) {
 
     // Show typing indicator
     bot.sendChatAction(chatId, 'typing');
+
+    // Mark any pending email as confirmable (user has now responded)
+    markPendingEmailConfirmable(chatId);
 
     // Update UI to processing
     incrementProcessing();

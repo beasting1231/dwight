@@ -92,6 +92,76 @@ export const memoryTools = [
       required: ['section', 'content'],
     },
   },
+  {
+    name: 'contacts_lookup',
+    description: 'Look up a contact by name to get their email, phone, or other info. Use this before sending emails to find the recipient address.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Name or partial name to search for',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'contacts_add',
+    description: 'Add a new contact to the address book.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Contact name',
+        },
+        email: {
+          type: 'string',
+          description: 'Email address (optional)',
+        },
+        phone: {
+          type: 'string',
+          description: 'Phone number (optional)',
+        },
+        notes: {
+          type: 'string',
+          description: 'Additional notes (optional)',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'contacts_update',
+    description: 'Update an existing contact. Provide the name to find and the fields to update.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Name of contact to update',
+        },
+        newName: {
+          type: 'string',
+          description: 'New name (if changing)',
+        },
+        email: {
+          type: 'string',
+          description: 'New email address',
+        },
+        phone: {
+          type: 'string',
+          description: 'New phone number',
+        },
+        notes: {
+          type: 'string',
+          description: 'New notes',
+        },
+      },
+      required: ['name'],
+    },
+  },
 ];
 
 /**
@@ -171,8 +241,133 @@ export function appendToUserMemory(section, content) {
   }
 }
 
+// Contacts file path (separate from core memory)
+const CONTACTS_FILE = path.join(MEMORY_DIR, 'contacts.md');
+
 /**
- * Load all memory files for context
+ * Read contacts file (on-demand, not loaded at startup)
+ */
+function readContacts() {
+  try {
+    if (fs.existsSync(CONTACTS_FILE)) {
+      return fs.readFileSync(CONTACTS_FILE, 'utf-8');
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Write contacts file
+ */
+function writeContacts(content) {
+  if (!fs.existsSync(MEMORY_DIR)) {
+    fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  }
+  fs.writeFileSync(CONTACTS_FILE, content, 'utf-8');
+}
+
+/**
+ * Parse contacts from markdown
+ */
+function parseContacts(content) {
+  const contacts = [];
+  const lines = content.split('\n');
+  let currentContact = null;
+
+  for (const line of lines) {
+    if (line.startsWith('### ')) {
+      if (currentContact) contacts.push(currentContact);
+      currentContact = { name: line.replace('### ', '').trim() };
+    } else if (currentContact && line.startsWith('- **')) {
+      const match = line.match(/- \*\*(\w+):\*\* (.+)/);
+      if (match) {
+        const key = match[1].toLowerCase();
+        currentContact[key] = match[2].trim();
+      }
+    }
+  }
+  if (currentContact) contacts.push(currentContact);
+
+  return contacts;
+}
+
+/**
+ * Format contacts to markdown
+ */
+function formatContacts(contacts) {
+  let md = '# Contacts\n\n## Format\nEach contact has: name, email, phone, notes\n\n---\n\n';
+  for (const c of contacts) {
+    md += `### ${c.name}\n`;
+    if (c.email) md += `- **Email:** ${c.email}\n`;
+    if (c.phone) md += `- **Phone:** ${c.phone}\n`;
+    if (c.notes) md += `- **Notes:** ${c.notes}\n`;
+    md += '\n';
+  }
+  return md;
+}
+
+/**
+ * Look up a contact by name
+ */
+export function lookupContact(searchName) {
+  const content = readContacts();
+  const contacts = parseContacts(content);
+  const search = searchName.toLowerCase();
+
+  const matches = contacts.filter(c =>
+    c.name.toLowerCase().includes(search)
+  );
+
+  return matches;
+}
+
+/**
+ * Add a new contact
+ */
+export function addContact({ name, email, phone, notes }) {
+  const content = readContacts();
+  const contacts = parseContacts(content);
+
+  // Check if exists
+  const existing = contacts.find(c => c.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    return { error: `Contact "${name}" already exists. Use contacts_update to modify.` };
+  }
+
+  contacts.push({ name, email, phone, notes });
+  writeContacts(formatContacts(contacts));
+  addNotification(`contact "${name}" added ✓`);
+
+  return { success: true, message: `Added contact: ${name}` };
+}
+
+/**
+ * Update an existing contact
+ */
+export function updateContact({ name, newName, email, phone, notes }) {
+  const content = readContacts();
+  const contacts = parseContacts(content);
+
+  const idx = contacts.findIndex(c => c.name.toLowerCase() === name.toLowerCase());
+  if (idx === -1) {
+    return { error: `Contact "${name}" not found.` };
+  }
+
+  if (newName) contacts[idx].name = newName;
+  if (email !== undefined) contacts[idx].email = email;
+  if (phone !== undefined) contacts[idx].phone = phone;
+  if (notes !== undefined) contacts[idx].notes = notes;
+
+  writeContacts(formatContacts(contacts));
+  addNotification(`contact "${newName || name}" updated ✓`);
+
+  return { success: true, message: `Updated contact: ${newName || name}` };
+}
+
+/**
+ * Load all memory files for context (excludes contacts - loaded on demand)
  */
 export function loadAllMemory() {
   return {
@@ -269,6 +464,13 @@ export function buildSystemPromptWithMemory(basePrompt) {
   prompt += 'GOOD rule: "EMAIL SENDING PROTOCOL: 1) Draft the email 2) Show user: To, Subject, and full Body 3) Ask explicitly: Send this? 4) Only call email_send after user says yes/send/confirmed"\n\n';
   prompt += 'When updating tools.md, write rules as step-by-step protocols you will actually follow.';
 
+  prompt += '\n\n---\n\n# CONTACTS LOOKUP RULE\n\n';
+  prompt += 'When user asks to email someone BY NAME (not an email address):\n';
+  prompt += '1. IMMEDIATELY call contacts_lookup tool with that name\n';
+  prompt += '2. If found → use the email from the result\n';
+  prompt += '3. If not found → ask user for the email address\n';
+  prompt += 'NEVER say "I don\'t have an email" without calling contacts_lookup first.\n';
+
   return prompt;
 }
 
@@ -297,6 +499,19 @@ export async function executeMemoryTool(toolName, params) {
           success: true,
           message: `Added to user.md under "${params.section}": ${params.content}`
         };
+
+      case 'contacts_lookup':
+        const matches = lookupContact(params.name);
+        if (matches.length === 0) {
+          return { found: false, message: `No contact found matching "${params.name}"` };
+        }
+        return { found: true, contacts: matches };
+
+      case 'contacts_add':
+        return addContact(params);
+
+      case 'contacts_update':
+        return updateContact(params);
 
       default:
         return { error: `Unknown memory tool: ${toolName}` };
