@@ -1,5 +1,6 @@
 import { simpleParser } from 'mailparser';
 import { getImapClient, getSmtpTransport } from './client.js';
+import { addNotification } from '../../state.js';
 
 /**
  * List emails from a mailbox
@@ -246,6 +247,8 @@ export async function sendEmail({ to, subject, text, html, cc, bcc, replyTo }) {
   }
 
   // Only return success if we have confirmation
+  addNotification(`mail sent to ${accepted.join(', ')} ✓`);
+
   return {
     success: true,
     messageId: result.messageId,

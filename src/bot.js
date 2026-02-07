@@ -9,19 +9,25 @@ import {
   loadVerifiedUsers,
   incrementProcessing,
   decrementProcessing,
-  getProcessingCount
+  getProcessingCount,
+  getAndClearNotifications,
+  addToolLog,
+  checkAndClearReload
 } from './state.js';
 import { getAIResponse } from './ai.js';
 import { drawUI, sleep } from './ui.js';
 import {
   handleApiCommand,
   handleModelCommand,
+  handleModeCommand,
   handleHelpCommand,
   handleStatusCommand,
   handleClearCommand,
-  handleEmailCommand
+  handleEmailCommand,
+  handleLogsCommand
 } from './cli.js';
 import { initializeTools, cleanupTools } from './tools/index.js';
+import { needsOnboarding, processOnboarding } from './chatOnboarding.js';
 
 export async function startBot(config) {
   // Check AI config
@@ -46,10 +52,25 @@ export async function startBot(config) {
 
   drawUI(config, 'online');
 
+  // Register bot commands for Telegram menu
+  await bot.setMyCommands([
+    { command: 'start', description: 'Start the bot' },
+    { command: 'clear', description: 'Clear conversation history' },
+    { command: 'restart', description: 'Reload config and memory' },
+  ]);
+
   // Handle /start command
-  bot.onText(/\/start/, (msg) => {
+  bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, `👋 Hello! I'm ${config.telegram.name}, your AI assistant powered by ${getModelShortName(config.ai.model)}.\n\nJust send me a message and I'll respond!`);
+
+    // Check if onboarding is needed
+    if (needsOnboarding(chatId)) {
+      const result = processOnboarding(chatId, '');
+      await bot.sendMessage(chatId, result.message);
+      return;
+    }
+
+    bot.sendMessage(chatId, `Hey! I'm ${config.telegram.name}. Just send me a message and I'll help out.`);
   });
 
   // Handle /clear command to reset conversation
@@ -57,6 +78,15 @@ export async function startBot(config) {
     const chatId = msg.chat.id;
     conversations.delete(chatId);
     bot.sendMessage(chatId, '🗑️ Conversation cleared! Starting fresh.');
+  });
+
+  // Handle /restart command to reload config (keeps conversation)
+  bot.onText(/\/restart/, (msg) => {
+    const chatId = msg.chat.id;
+    Object.assign(config, loadConfig());
+    addToolLog({ tool: 'restart', status: 'success', detail: 'config reloaded' });
+    drawUI(config, 'online');
+    bot.sendMessage(chatId, '🔄 Restarted! Config and memory reloaded.');
   });
 
   // Handle contact sharing for phone verification
@@ -114,6 +144,26 @@ export async function startBot(config) {
     const userMessage = msg.text;
     if (!userMessage) return;
 
+    // Check if onboarding is needed
+    if (needsOnboarding(chatId)) {
+      bot.sendChatAction(chatId, 'typing');
+      const result = processOnboarding(chatId, userMessage);
+      await bot.sendMessage(chatId, result.message);
+
+      // Send any pending notifications (memory updates from onboarding)
+      const notifications = getAndClearNotifications();
+      if (notifications.length > 0) {
+        const notifMsg = notifications.join('\n');
+        await bot.sendMessage(chatId, notifMsg);
+      }
+
+      // If onboarding just completed, reload config to get new bot name
+      if (result.complete) {
+        Object.assign(config, loadConfig());
+      }
+      return;
+    }
+
     // Show typing indicator
     bot.sendChatAction(chatId, 'typing');
 
@@ -124,8 +174,12 @@ export async function startBot(config) {
     try {
       const response = await getAIResponse(config, chatId, userMessage);
 
-      // Send response (split if too long)
-      if (response.length > 4096) {
+      // Send response
+      const isEmailConfirmation = response && /^(email|mail)\s+(sent|delivered)/i.test(response.trim());
+      if (!response || !response.trim() || isEmailConfirmation) {
+        // Empty response or email confirmation (notification handles it) - nothing to send
+      } else if (response.length > 4096) {
+        // Split long messages
         const chunks = response.match(/.{1,4096}/gs) || [];
         for (const chunk of chunks) {
           await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' }).catch(() => {
@@ -136,6 +190,20 @@ export async function startBot(config) {
         await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' }).catch(() => {
           bot.sendMessage(chatId, response);
         });
+      }
+
+      // Send any pending notifications (memory updates, etc.)
+      const notifications = getAndClearNotifications();
+      if (notifications.length > 0) {
+        const notifMsg = notifications.join('\n');
+        await bot.sendMessage(chatId, notifMsg);
+      }
+
+      // Auto-reload config if memory was updated
+      if (checkAndClearReload()) {
+        Object.assign(config, loadConfig());
+        addToolLog({ tool: 'auto-reload', status: 'success', detail: 'memory updated' });
+        drawUI(config, 'online');
       }
     } catch (error) {
       bot.sendMessage(chatId, `❌ Sorry, I encountered an error: ${error.message}`);
@@ -186,6 +254,7 @@ export async function startBot(config) {
           break;
 
         case 'restart':
+          addToolLog({ tool: 'restart', status: 'success', detail: 'full restart' });
           bot.stopPolling();
           rl.close();
           await sleep(300);
@@ -204,12 +273,21 @@ export async function startBot(config) {
           drawUI(config, 'online');
           break;
 
+        case 'mode':
+          await handleModeCommand(config, rl);
+          drawUI(config, 'online');
+          break;
+
         case 'clear':
           handleClearCommand(config);
           break;
 
         case 'status':
           handleStatusCommand(config);
+          break;
+
+        case 'logs':
+          handleLogsCommand(config);
           break;
 
         case 'help':

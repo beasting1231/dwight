@@ -1,6 +1,7 @@
 import { emailTools, executeEmailTool, initializeEmail, cleanupEmail } from './email/index.js';
 import { memoryTools, executeMemoryTool } from './memory/index.js';
 import { datetimeTools, executeDatetimeTool } from './datetime/index.js';
+import { fileTools, executeFileTool } from './files/index.js';
 
 /**
  * All available tools for the AI
@@ -9,22 +10,40 @@ export const allTools = [
   ...emailTools,
   ...memoryTools,
   ...datetimeTools,
+  ...fileTools,
 ];
 
 /**
  * Tool executors mapped by name
  */
 const toolExecutors = {
-  email_list: (params) => executeEmailTool('email_list', params),
-  email_read: (params) => executeEmailTool('email_read', params),
-  email_search: (params) => executeEmailTool('email_search', params),
-  email_send: (params) => executeEmailTool('email_send', params),
-  email_unread_count: (params) => executeEmailTool('email_unread_count', params),
+  email_list: (params, ctx) => executeEmailTool('email_list', params, ctx),
+  email_read: (params, ctx) => executeEmailTool('email_read', params, ctx),
+  email_search: (params, ctx) => executeEmailTool('email_search', params, ctx),
+  email_draft: (params, ctx) => executeEmailTool('email_draft', params, ctx),
+  email_confirm: (params, ctx) => executeEmailTool('email_confirm', params, ctx),
+  email_unread_count: (params, ctx) => executeEmailTool('email_unread_count', params, ctx),
   memory_read: (params) => executeMemoryTool('memory_read', params),
   memory_update: (params) => executeMemoryTool('memory_update', params),
   memory_append: (params) => executeMemoryTool('memory_append', params),
   datetime_now: (params) => executeDatetimeTool('datetime_now', params),
+  file_read: (params) => executeFileTool('file_read', params),
+  file_write: (params) => executeFileTool('file_write', params),
+  file_edit: (params) => executeFileTool('file_edit', params),
+  file_list: (params) => executeFileTool('file_list', params),
+  file_search: (params) => executeFileTool('file_search', params),
+  file_delete: (params) => executeFileTool('file_delete', params),
+  file_copy: (params) => executeFileTool('file_copy', params),
+  file_move: (params) => executeFileTool('file_move', params),
+  file_info: (params) => executeFileTool('file_info', params),
 };
+
+// Current chat context for tools that need it
+let currentChatId = null;
+
+export function setCurrentChatId(chatId) {
+  currentChatId = chatId;
+}
 
 /**
  * Execute a tool by name
@@ -34,7 +53,7 @@ export async function executeTool(toolName, params) {
   if (!executor) {
     return { error: `Unknown tool: ${toolName}` };
   }
-  return executor(params);
+  return executor(params, { chatId: currentChatId });
 }
 
 /**

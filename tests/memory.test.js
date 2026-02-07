@@ -99,6 +99,25 @@ describe('memory tools', () => {
       const prompt = buildSystemPromptWithMemory('');
       expect(prompt).toContain('MEMORY UPDATE INSTRUCTIONS');
     });
+
+    it('should include file operation mode instructions', () => {
+      const prompt = buildSystemPromptWithMemory('');
+      expect(prompt).toContain('FILE OPERATION MODE');
+    });
+
+    it('should include system environment info', () => {
+      const prompt = buildSystemPromptWithMemory('');
+      expect(prompt).toContain('SYSTEM ENVIRONMENT');
+      expect(prompt).toContain('Desktop:');
+      expect(prompt).toContain('Documents:');
+      expect(prompt).toContain('Downloads:');
+    });
+
+    it('should include path resolution instructions', () => {
+      const prompt = buildSystemPromptWithMemory('');
+      expect(prompt).toContain('PATH RESOLUTION');
+      expect(prompt).toContain('Never ask the user for full file paths');
+    });
   });
 
   describe('executeMemoryTool', () => {

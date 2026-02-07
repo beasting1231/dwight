@@ -1,5 +1,5 @@
 import { conversations } from './state.js';
-import { allTools, executeTool, formatToolsForAI } from './tools/index.js';
+import { allTools, executeTool, formatToolsForAI, setCurrentChatId } from './tools/index.js';
 import { loadConfig } from './config.js';
 import { logToolCall } from './ui.js';
 import { buildSystemPromptWithMemory } from './tools/memory/index.js';
@@ -108,9 +108,9 @@ async function processAnthropicResponse(config, response, history) {
   // Execute tools
   const toolResults = [];
   for (const toolUse of toolUses) {
-    logToolCall(toolUse.name, 'running');
+    logToolCall(toolUse.name, 'running', toolUse.input);
     const result = await executeTool(toolUse.name, toolUse.input);
-    logToolCall(toolUse.name, result.error ? 'error' : 'success');
+    logToolCall(toolUse.name, result.error ? 'error' : 'success', toolUse.input);
     toolResults.push({
       type: 'tool_result',
       tool_use_id: toolUse.id,
@@ -147,12 +147,10 @@ async function processOpenRouterResponse(config, response, history) {
 
     // Execute tools and add results
     for (const toolCall of message.tool_calls) {
-      logToolCall(toolCall.function.name, 'running');
-      const result = await executeTool(
-        toolCall.function.name,
-        JSON.parse(toolCall.function.arguments)
-      );
-      logToolCall(toolCall.function.name, result.error ? 'error' : 'success');
+      const toolParams = JSON.parse(toolCall.function.arguments);
+      logToolCall(toolCall.function.name, 'running', toolParams);
+      const result = await executeTool(toolCall.function.name, toolParams);
+      logToolCall(toolCall.function.name, result.error ? 'error' : 'success', toolParams);
 
       history.push({
         role: 'tool',
@@ -174,6 +172,9 @@ async function processOpenRouterResponse(config, response, history) {
  * Get AI response with optional tool support
  */
 export async function getAIResponse(config, chatId, userMessage) {
+  // Set current chat context for tools
+  setCurrentChatId(chatId);
+
   // Get or create conversation history
   if (!conversations.has(chatId)) {
     conversations.set(chatId, []);

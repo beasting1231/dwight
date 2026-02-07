@@ -7,6 +7,8 @@ import {
   loadStoredKeys,
   saveApiKey,
   saveVerifiedUser,
+  getFileMode,
+  setFileMode,
   CONFIG_PATH
 } from '../src/config.js';
 
@@ -155,6 +157,62 @@ describe('config', () => {
 
       const savedConfig = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
       expect(savedConfig.verifiedUsers['123456']).toBe('+1234567890');
+    });
+  });
+
+  describe('getFileMode', () => {
+    it('should return "ask" as default when no config exists', () => {
+      fs.existsSync = jest.fn().mockReturnValue(false);
+
+      const result = getFileMode();
+
+      expect(result).toBe('ask');
+    });
+
+    it('should return "ask" when fileMode is not set', () => {
+      const mockConfig = { telegram: { token: 'test' } };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(mockConfig));
+
+      const result = getFileMode();
+
+      expect(result).toBe('ask');
+    });
+
+    it('should return configured fileMode', () => {
+      const mockConfig = { fileMode: 'auto' };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(mockConfig));
+
+      const result = getFileMode();
+
+      expect(result).toBe('auto');
+    });
+  });
+
+  describe('setFileMode', () => {
+    it('should set fileMode to "auto"', () => {
+      const existingConfig = { telegram: { token: 'test' } };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(existingConfig));
+      fs.writeFileSync = jest.fn();
+
+      setFileMode('auto');
+
+      const savedConfig = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
+      expect(savedConfig.fileMode).toBe('auto');
+    });
+
+    it('should set fileMode to "ask"', () => {
+      const existingConfig = { fileMode: 'auto' };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(existingConfig));
+      fs.writeFileSync = jest.fn();
+
+      setFileMode('ask');
+
+      const savedConfig = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
+      expect(savedConfig.fileMode).toBe('ask');
     });
   });
 });

@@ -2,6 +2,7 @@
 
 import chalk from 'chalk';
 import inquirer from 'inquirer';
+import select from '@inquirer/select';
 import { loadConfig, resetConfig } from './config.js';
 import { displayLogo, showStatus } from './ui.js';
 import { startBot } from './bot.js';
@@ -17,21 +18,26 @@ async function showMainMenu() {
       continue;
     }
 
-    const { action } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'action',
-        message: chalk.cyan('What would you like to do?'),
-        choices: [
-          { name: '🚀 Start bot', value: 'start' },
-          { name: '📊 View status', value: 'status' },
-          { name: '⚙️  Reconfigure', value: 'setup' },
-          { name: '🗑️  Reset config', value: 'reset' },
-          new inquirer.Separator(),
-          { name: '👋 Exit', value: 'exit' }
-        ]
+    const action = await select({
+      message: '',
+      choices: [
+        { name: 'Start bot', value: 'start' },
+        { name: 'View status', value: 'status' },
+        { name: 'Reconfigure', value: 'setup' },
+        { name: 'Reset config', value: 'reset' },
+        { type: 'separator', separator: '──────────────' },
+        { name: '👋 Exit', value: 'exit' }
+      ],
+      theme: {
+        prefix: { idle: '', done: '' },
+        icon: { cursor: '❯' },
+        style: {
+          highlight: (text) => chalk.cyan(text),
+          message: () => '',
+          keysHelpTip: () => undefined,
+        },
       }
-    ]);
+    });
 
     switch (action) {
       case 'start':
@@ -85,6 +91,10 @@ async function showMainMenu() {
 
       case 'exit':
         console.log(chalk.gray('\n  👋 Goodbye!\n'));
+        // Kill parent process to exit --watch mode, then self
+        if (process.ppid) {
+          process.kill(process.ppid, 'SIGTERM');
+        }
         process.exit(0);
     }
   }
@@ -94,6 +104,10 @@ async function main() {
   // Global SIGINT handler for Ctrl+C
   process.on('SIGINT', () => {
     console.log('\n' + chalk.gray('👋 Goodbye!'));
+    // Kill parent process to exit --watch mode
+    if (process.ppid) {
+      process.kill(process.ppid, 'SIGTERM');
+    }
     process.exit(0);
   });
 

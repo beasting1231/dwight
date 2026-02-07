@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import gradient from 'gradient-string';
 import boxen from 'boxen';
 import { getModelShortName } from './models.js';
-import { getTokenCount } from './state.js';
+import { getTokenCount, addToolLog, getToolLog } from './state.js';
 
 export const dwightGradient = gradient(['#ff6b35', '#f7c59f', '#efefef']);
 export const accentGradient = gradient(['#2ec4b6', '#e71d36']);
@@ -68,6 +68,22 @@ export function drawUI(config, status = 'online') {
     chalk.gray('  │  ') + chalk.gray(tokenCount.toLocaleString() + ' tokens');
 
   console.log('\n  ' + statusLine + '\n');
+
+  // Show recent tool log
+  const log = getToolLog();
+  if (log.length > 0) {
+    console.log(chalk.gray('  ─── Tool Log ───'));
+    // Show last 10 entries
+    const recentLog = log.slice(-10);
+    for (const entry of recentLog) {
+      const icon = entry.status === 'success' ? chalk.green('✓') :
+                   entry.status === 'error' ? chalk.red('✗') :
+                   chalk.yellow('…');
+      const detail = entry.detail ? chalk.cyan(` ${entry.detail}`) : '';
+      console.log(chalk.gray(`  ${entry.timestamp}  ${icon} ${entry.tool}`) + detail);
+    }
+    console.log('');
+  }
 }
 
 export function showStatus(config) {
@@ -102,28 +118,44 @@ export function sleep(ms) {
 
 /**
  * Log a tool call to the UI
+ * @param {string} toolName - Name of the tool
+ * @param {string} status - 'running', 'success', or 'error'
+ * @param {Object} params - Tool parameters (optional)
  */
-export function logToolCall(toolName, status = 'running') {
-  const toolIcons = {
-    email_list: '📧',
-    email_read: '📖',
-    email_search: '🔍',
-    email_send: '✉️',
-    email_unread_count: '📬',
-    memory_read: '🧠',
-    memory_update: '💾',
-    memory_append: '📝',
-    datetime_now: '🕐',
-  };
-
-  const icon = toolIcons[toolName] || '🔧';
+export function logToolCall(toolName, status = 'running', params = null) {
   const name = toolName.replace(/_/g, ' ');
 
-  if (status === 'running') {
-    console.log(chalk.gray(`  ${icon} ${name}...`));
-  } else if (status === 'success') {
-    console.log(chalk.green(`  ${icon} ${name} ✓`));
-  } else if (status === 'error') {
-    console.log(chalk.red(`  ${icon} ${name} ✗`));
+  // Add to persistent log (only final status, not 'running')
+  if (status !== 'running') {
+    let detail = null;
+
+    // Extract relevant details based on tool type
+    if (params) {
+      if (toolName.startsWith('file_')) {
+        // File tools - show path(s)
+        if (params.path) {
+          detail = shortenPath(params.path);
+        } else if (params.source && params.destination) {
+          detail = `${shortenPath(params.source)} → ${shortenPath(params.destination)}`;
+        }
+      } else if (toolName === 'memory_update' || toolName === 'memory_read') {
+        detail = params.file;
+      } else if (toolName === 'email_send') {
+        detail = params.to;
+      }
+    }
+
+    addToolLog({ tool: name, status, detail });
   }
+}
+
+/**
+ * Shorten a file path for display
+ */
+function shortenPath(filePath) {
+  if (!filePath) return '';
+  const parts = filePath.split('/');
+  if (parts.length <= 3) return filePath;
+  // Show last 2 parts (e.g., "Desktop/test.txt")
+  return '.../' + parts.slice(-2).join('/');
 }

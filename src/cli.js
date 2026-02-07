@@ -1,8 +1,9 @@
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import { loadConfig, saveConfig, loadStoredKeys, saveApiKey } from './config.js';
+import { execSync } from 'child_process';
+import { loadConfig, saveConfig, loadStoredKeys, saveApiKey, getFileMode, setFileMode } from './config.js';
 import { MODELS } from './models.js';
-import { clearConversations, clearVerifiedUsers, getTokenCount } from './state.js';
+import { clearConversations, clearVerifiedUsers, getTokenCount, getToolLog } from './state.js';
 import { drawUI } from './ui.js';
 import { setupEmail } from './tools/email/setup.js';
 
@@ -175,12 +176,94 @@ export function handleHelpCommand(config) {
   console.log(chalk.yellow('  help    ') + chalk.gray('Show this help'));
   console.log(chalk.yellow('  api     ') + chalk.gray('Configure API keys'));
   console.log(chalk.yellow('  model   ') + chalk.gray('Change AI model'));
+  console.log(chalk.yellow('  mode    ') + chalk.gray('Set file operation permission mode'));
   console.log(chalk.yellow('  email   ') + chalk.gray('Configure email integration'));
   console.log(chalk.yellow('  status  ') + chalk.gray('Show current config'));
+  console.log(chalk.yellow('  logs    ') + chalk.gray('Copy tool logs to clipboard'));
   console.log(chalk.yellow('  clear   ') + chalk.gray('Clear conversation context'));
   console.log(chalk.yellow('  restart ') + chalk.gray('Restart the bot'));
   console.log(chalk.yellow('  back    ') + chalk.gray('Return to main menu'));
   console.log('');
+}
+
+export function handleLogsCommand(config) {
+  const log = getToolLog();
+
+  if (log.length === 0) {
+    console.log(chalk.yellow('  No tool logs yet.\n'));
+    return;
+  }
+
+  // Format logs as text
+  const logText = log.map(entry => {
+    const status = entry.status === 'success' ? '✓' : entry.status === 'error' ? '✗' : '?';
+    const detail = entry.detail ? ` ${entry.detail}` : '';
+    return `${entry.timestamp}  ${status} ${entry.tool}${detail}`;
+  }).join('\n');
+
+  // Copy to clipboard (macOS)
+  try {
+    execSync('pbcopy', { input: logText });
+    console.log(chalk.green(`  Copied ${log.length} log entries to clipboard.\n`));
+  } catch {
+    // Fallback: just print the logs
+    console.log(chalk.gray('  ─── Tool Logs ───\n'));
+    console.log(logText);
+    console.log(chalk.gray('\n  (Could not copy to clipboard)\n'));
+  }
+}
+
+export async function handleModeCommand(config, rl) {
+  rl.pause();
+  const currentMode = getFileMode();
+
+  try {
+    const { mode } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'mode',
+        message: chalk.cyan('Select file operation mode:'),
+        choices: [
+          {
+            name: currentMode === 'ask'
+              ? chalk.green('● ') + 'Ask ' + chalk.gray('- Ask permission before file operations')
+              : '  Ask ' + chalk.gray('- Ask permission before file operations'),
+            value: 'ask'
+          },
+          {
+            name: currentMode === 'auto'
+              ? chalk.green('● ') + 'Auto ' + chalk.gray('- Operate freely, only ask when task is unclear')
+              : '  Auto ' + chalk.gray('- Operate freely, only ask when task is unclear'),
+            value: 'auto'
+          },
+          new inquirer.Separator(),
+          { name: chalk.gray('← Back'), value: 'back' }
+        ]
+      }
+    ]);
+
+    if (mode === 'back') {
+      rl.resume();
+      return false;
+    }
+
+    setFileMode(mode);
+
+    if (mode === 'ask') {
+      console.log(chalk.green('\n  ✅ Mode set to Ask'));
+      console.log(chalk.gray('     Dwight will ask permission before file operations.\n'));
+    } else {
+      console.log(chalk.green('\n  ✅ Mode set to Auto'));
+      console.log(chalk.gray('     Dwight will operate freely and only ask when tasks are unclear.\n'));
+    }
+
+    rl.resume();
+    return false;
+
+  } catch (e) {
+    rl.resume();
+    return false;
+  }
 }
 
 export async function handleEmailCommand(config, rl) {
@@ -197,11 +280,13 @@ export async function handleEmailCommand(config, rl) {
 
 export function handleStatusCommand(config) {
   const currentConfig = loadConfig();
+  const fileMode = getFileMode();
   drawUI(config, 'online');
   console.log(chalk.gray('  Provider:    ') + chalk.yellow(currentConfig.ai?.provider || 'none'));
   console.log(chalk.gray('  Model:       ') + chalk.white(currentConfig.ai?.model || 'none'));
   console.log(chalk.gray('  Context:     ') + chalk.white(getTokenCount().toLocaleString() + ' tokens'));
   console.log(chalk.gray('  Temperature: ') + chalk.white(currentConfig.ai?.temperature ?? 0.7));
+  console.log(chalk.gray('  File Mode:   ') + chalk.white(fileMode === 'auto' ? 'Auto' : 'Ask'));
   console.log('');
 }
 

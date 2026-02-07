@@ -53,3 +53,65 @@ export function saveVerifiedUser(chatId, phone) {
   config.verifiedUsers[chatId] = phone;
   saveConfig(config);
 }
+
+/**
+ * Get the current file operation mode
+ * @returns {'ask' | 'auto'} The current mode
+ */
+export function getFileMode() {
+  const config = loadConfig();
+  return config?.fileMode || 'ask';
+}
+
+/**
+ * Check if user onboarding is complete
+ * @param {string|number} chatId - The chat ID
+ * @returns {boolean}
+ */
+export function isOnboardingComplete(chatId) {
+  const config = loadConfig();
+  return config?.onboarding?.[chatId]?.complete === true;
+}
+
+/**
+ * Get onboarding state for a user
+ * @param {string|number} chatId - The chat ID
+ * @returns {Object}
+ */
+export function getOnboardingState(chatId) {
+  const config = loadConfig();
+  return config?.onboarding?.[chatId] || { step: 0, complete: false, data: {} };
+}
+
+/**
+ * Save onboarding state for a user
+ * @param {string|number} chatId - The chat ID
+ * @param {Object} state - The onboarding state
+ */
+export function saveOnboardingState(chatId, state) {
+  const config = loadConfig() || {};
+  config.onboarding = config.onboarding || {};
+  config.onboarding[chatId] = state;
+  saveConfig(config);
+}
+
+/**
+ * Update bot name in config
+ * @param {string} name - The new bot name
+ */
+export function setBotName(name) {
+  const config = loadConfig() || {};
+  config.telegram = config.telegram || {};
+  config.telegram.name = name;
+  saveConfig(config);
+}
+
+/**
+ * Set the file operation mode
+ * @param {'ask' | 'auto'} mode - The mode to set
+ */
+export function setFileMode(mode) {
+  const config = loadConfig() || {};
+  config.fileMode = mode;
+  saveConfig(config);
+}

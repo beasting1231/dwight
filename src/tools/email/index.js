@@ -1,4 +1,5 @@
 import { loadConfig, saveConfig } from '../../config.js';
+import { setPendingEmail, getPendingEmail, clearPendingEmail } from '../../state.js';
 import {
   getImapConfig,
   getSmtpConfig,
@@ -94,8 +95,8 @@ export const emailTools = [
     },
   },
   {
-    name: 'email_send',
-    description: 'Send an email to specified recipients',
+    name: 'email_draft',
+    description: 'REQUIRED first step to send any email. Call this tool to stage the draft - do NOT just write email text without calling this tool. After calling, show the draft and ask user to confirm.',
     parameters: {
       type: 'object',
       properties: {
@@ -117,6 +118,14 @@ export const emailTools = [
         },
       },
       required: ['to', 'subject', 'text'],
+    },
+  },
+  {
+    name: 'email_confirm',
+    description: 'Send the email that was staged with email_draft. Will FAIL if email_draft was not called first. Only call after user confirms.',
+    parameters: {
+      type: 'object',
+      properties: {},
     },
   },
   {
@@ -194,7 +203,7 @@ export function isEmailConnected() {
 /**
  * Execute an email tool
  */
-export async function executeEmailTool(toolName, params) {
+export async function executeEmailTool(toolName, params, ctx = {}) {
   // Ensure connected
   if (!isEmailConnected()) {
     const init = await initializeEmail();
@@ -225,12 +234,40 @@ export async function executeEmailTool(toolName, params) {
           limit: params.limit,
         });
 
-      case 'email_send':
-        return await sendEmail({
+      case 'email_draft':
+        // Store the email as pending, return draft for user review
+        const chatId = ctx?.chatId || 'default';
+        console.log('[email_draft] chatId:', chatId);
+        setPendingEmail(chatId, {
           to: params.to,
           subject: params.subject,
           text: params.text,
           cc: params.cc,
+        });
+        return {
+          status: 'draft_ready',
+          instruction: 'DISPLAY THIS FULL DRAFT TO USER, then ask "Send this email?"',
+          to: params.to,
+          subject: params.subject,
+          body: params.text,
+          cc: params.cc || null,
+        };
+
+      case 'email_confirm':
+        // Send the pending email
+        const confirmChatId = ctx?.chatId || 'default';
+        console.log('[email_confirm] chatId:', confirmChatId);
+        const pending = getPendingEmail(confirmChatId);
+        console.log('[email_confirm] pending:', pending ? 'found' : 'NOT FOUND');
+        if (!pending) {
+          return { error: `No pending email to send (chatId: ${confirmChatId}). Use email_draft first to create a draft.` };
+        }
+        clearPendingEmail(confirmChatId);
+        return await sendEmail({
+          to: pending.to,
+          subject: pending.subject,
+          text: pending.text,
+          cc: pending.cc,
         });
 
       case 'email_unread_count':
