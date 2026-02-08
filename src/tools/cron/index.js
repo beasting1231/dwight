@@ -19,19 +19,23 @@ export const cronTools = [
     name: 'cron_create',
     description: `Create a scheduled task (cron job) that will execute at specified times.
 
+IMPORTANT: For ONE-TIME reminders (e.g., "in 5 minutes", "tomorrow at 3pm", "next Tuesday"),
+ALWAYS use type: "once" with a specific datetime. The task auto-deletes after running.
+
+For RECURRING tasks (e.g., "every day", "every Monday", "every 2 hours"), use other types.
+
 Pattern types:
-- once: Run once at a specific date/time
-- daily: Run every day at a specific time
-- weekly: Run on specific days of the week
-- monthly: Run on a specific day of the month, or nth weekday (e.g., "2nd Thursday")
-- interval: Run every N hours or minutes
+- once: Run ONCE at a specific date/time, then auto-delete (USE FOR REMINDERS)
+- daily: Run every day at a specific time (RECURRING)
+- weekly: Run on specific days of the week (RECURRING)
+- monthly: Run on a specific day of the month (RECURRING)
+- interval: Run every N hours or minutes (RECURRING - NOT for one-time reminders!)
 
 Examples:
-- "Tomorrow at 8am" → { type: "once", datetime: "2026-02-09T08:00:00" }
+- "Remind me in 5 minutes" → { type: "once", datetime: "<current time + 5 minutes in ISO format>" }
+- "Remind me tomorrow at 8am" → { type: "once", datetime: "2026-02-09T08:00:00" }
 - "Every day at 9am" → { type: "daily", time: "09:00" }
 - "Every Monday and Friday at 2pm" → { type: "weekly", days: ["monday", "friday"], time: "14:00" }
-- "15th of each month at 10am" → { type: "monthly", dayOfMonth: 15, time: "10:00" }
-- "Second Thursday of each month at 3pm" → { type: "monthly", weekday: "thursday", occurrence: 2, time: "15:00" }
 - "Every 4 hours" → { type: "interval", hours: 4 }`,
     parameters: {
       type: 'object',
@@ -80,11 +84,11 @@ Examples:
             },
             hours: {
               type: 'number',
-              description: 'For "interval": Number of hours between runs',
+              description: 'For "interval" (recurring): Number of hours between runs. NOT for one-time reminders!',
             },
             minutes: {
               type: 'number',
-              description: 'For "interval": Number of minutes between runs',
+              description: 'For "interval" (recurring): Number of minutes between runs. NOT for one-time reminders!',
             },
           },
           required: ['type'],
