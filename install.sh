@@ -29,10 +29,10 @@ elif [[ -f /etc/debian_version ]]; then
     sudo apt install -y nodejs
 
     echo "Installing ffmpeg..."
-    sudo apt install -y ffmpeg
+    sudo apt install -y ffmpeg python3-pip
 
     echo "Installing Whisper..."
-    pip3 install openai-whisper
+    pip3 install openai-whisper --break-system-packages
 
 else
     echo "Unsupported OS. Please install manually:"
