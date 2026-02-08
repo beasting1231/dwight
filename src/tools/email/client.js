@@ -1,8 +1,10 @@
 import { ImapFlow } from 'imapflow';
 import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
 let imapClient = null;
 let smtpTransport = null;
+let resendClient = null;
 
 /**
  * Get IMAP configuration based on provider
@@ -139,4 +141,45 @@ export async function verifySmtp() {
     throw new Error('SMTP transport not configured');
   }
   return smtpTransport.verify();
+}
+
+/**
+ * Initialize Resend client
+ */
+export function initResend(apiKey) {
+  resendClient = new Resend(apiKey);
+  return resendClient;
+}
+
+/**
+ * Get Resend client
+ */
+export function getResendClient() {
+  return resendClient;
+}
+
+/**
+ * Send email via Resend
+ */
+export async function sendViaResend({ from, to, subject, text, html, cc, bcc, replyTo }) {
+  if (!resendClient) {
+    throw new Error('Resend not configured');
+  }
+
+  const { data, error } = await resendClient.emails.send({
+    from,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    text,
+    html,
+    cc: cc ? (Array.isArray(cc) ? cc : [cc]) : undefined,
+    bcc: bcc ? (Array.isArray(bcc) ? bcc : [bcc]) : undefined,
+    reply_to: replyTo,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data;
 }

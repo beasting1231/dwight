@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import inquirer from 'inquirer';
 import ora from 'ora';
 import { loadConfig, saveConfig } from '../../config.js';
-import { connectImap, createSmtpTransport, verifySmtp, disconnectImap, getImapConfig, getSmtpConfig } from './client.js';
+import { connectImap, createSmtpTransport, verifySmtp, disconnectImap, getImapConfig, getSmtpConfig, initResend } from './client.js';
 
 /**
  * Run email setup wizard
@@ -29,6 +29,42 @@ export async function setupEmail() {
 
   if (provider === 'cancel') {
     return false;
+  }
+
+  // Ask about Resend for sending (useful when SMTP is blocked)
+  const { useResend } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'useResend',
+      message: chalk.cyan('How do you want to send emails?'),
+      choices: [
+        { name: `Use ${provider} SMTP (default)`, value: false },
+        { name: 'Use Resend API (if SMTP is blocked)', value: true },
+      ],
+    },
+  ]);
+
+  let resendApiKey = null;
+  let resendFromEmail = null;
+  if (useResend) {
+    console.log(chalk.gray('\n  Get your API key at: https://resend.com/api-keys\n'));
+    const resendCreds = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: chalk.cyan('Resend API Key:'),
+        mask: '*',
+        validate: (input) => input.startsWith('re_') || 'API key should start with re_',
+      },
+      {
+        type: 'input',
+        name: 'fromEmail',
+        message: chalk.cyan('Send from email (e.g. you@yourdomain.com or onboarding@resend.dev):'),
+        validate: (input) => input.includes('@') || 'Enter a valid email',
+      },
+    ]);
+    resendApiKey = resendCreds.apiKey;
+    resendFromEmail = resendCreds.fromEmail;
   }
 
   // Email and password
@@ -128,22 +164,30 @@ export async function setupEmail() {
       : getImapConfig(provider, credentials.email, credentials.password);
 
     await connectImap(imapConfig);
-    spinner.text = chalk.cyan('IMAP connected, testing SMTP...');
 
-    // Test SMTP
-    const smtpConfig = provider === 'custom'
-      ? {
-          host: smtpSettings.host,
-          port: smtpSettings.port,
-          secure: smtpSettings.secure,
-          auth: { user: credentials.email, pass: credentials.password },
-        }
-      : getSmtpConfig(provider, credentials.email, credentials.password);
+    if (useResend) {
+      spinner.text = chalk.cyan('IMAP connected, testing Resend...');
+      initResend(resendApiKey);
+      // Resend doesn't have a verify method, but if API key is invalid it will fail on send
+      spinner.succeed(chalk.green('Email connection successful! (Resend will be used for sending)'));
+    } else {
+      spinner.text = chalk.cyan('IMAP connected, testing SMTP...');
 
-    createSmtpTransport(smtpConfig);
-    await verifySmtp();
+      // Test SMTP
+      const smtpConfig = provider === 'custom'
+        ? {
+            host: smtpSettings.host,
+            port: smtpSettings.port,
+            secure: smtpSettings.secure,
+            auth: { user: credentials.email, pass: credentials.password },
+          }
+        : getSmtpConfig(provider, credentials.email, credentials.password);
 
-    spinner.succeed(chalk.green('Email connection successful!'));
+      createSmtpTransport(smtpConfig);
+      await verifySmtp();
+
+      spinner.succeed(chalk.green('Email connection successful!'));
+    }
 
     // Disconnect test connection
     await disconnectImap();
@@ -181,6 +225,10 @@ export async function setupEmail() {
     password: credentials.password,
     imap: provider === 'custom' ? imapSettings : {},
     smtp: provider === 'custom' ? smtpSettings : {},
+    resend: useResend ? {
+      apiKey: resendApiKey,
+      fromEmail: resendFromEmail,
+    } : null,
   };
 
   saveConfig(config);

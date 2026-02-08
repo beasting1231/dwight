@@ -8,6 +8,7 @@ import {
   createSmtpTransport,
   verifySmtp,
   getImapClient,
+  initResend,
 } from './client.js';
 import {
   listEmails,
@@ -156,7 +157,7 @@ export async function initializeEmail() {
 
   try {
     // Connect IMAP
-    const imapConfig = emailConfig.imap.host
+    const imapConfig = emailConfig.imap?.host
       ? {
           host: emailConfig.imap.host,
           port: emailConfig.imap.port,
@@ -171,21 +172,25 @@ export async function initializeEmail() {
 
     await connectImap(imapConfig);
 
-    // Setup SMTP
-    const smtpConfig = emailConfig.smtp.host
-      ? {
-          host: emailConfig.smtp.host,
-          port: emailConfig.smtp.port,
-          secure: emailConfig.smtp.secure,
-          auth: {
-            user: emailConfig.email,
-            pass: emailConfig.password,
-          },
-        }
-      : getSmtpConfig(emailConfig.provider, emailConfig.email, emailConfig.password);
+    // Setup Resend or SMTP for sending
+    if (emailConfig.resend?.apiKey) {
+      initResend(emailConfig.resend.apiKey);
+    } else {
+      const smtpConfig = emailConfig.smtp?.host
+        ? {
+            host: emailConfig.smtp.host,
+            port: emailConfig.smtp.port,
+            secure: emailConfig.smtp.secure,
+            auth: {
+              user: emailConfig.email,
+              pass: emailConfig.password,
+            },
+          }
+        : getSmtpConfig(emailConfig.provider, emailConfig.email, emailConfig.password);
 
-    smtpConfig.from = emailConfig.email;
-    createSmtpTransport(smtpConfig);
+      smtpConfig.from = emailConfig.email;
+      createSmtpTransport(smtpConfig);
+    }
 
     return { success: true };
   } catch (error) {

@@ -1,6 +1,7 @@
 import { simpleParser } from 'mailparser';
-import { getImapClient, getSmtpTransport } from './client.js';
+import { getImapClient, getSmtpTransport, getResendClient, sendViaResend } from './client.js';
 import { addNotification } from '../../state.js';
+import { loadConfig } from '../../config.js';
 
 /**
  * List emails from a mailbox
@@ -205,11 +206,6 @@ export async function searchEmails({
  * @returns {Promise<Object>} Send result
  */
 export async function sendEmail({ to, subject, text, html, cc, bcc, replyTo }) {
-  const transport = getSmtpTransport();
-  if (!transport) {
-    throw new Error('SMTP transport not configured');
-  }
-
   // Validate required fields
   if (!to || !to.trim()) {
     throw new Error('Recipient (to) is required');
@@ -219,6 +215,41 @@ export async function sendEmail({ to, subject, text, html, cc, bcc, replyTo }) {
   }
   if (!text || !text.trim()) {
     throw new Error('Email body (text) is required');
+  }
+
+  // Check if Resend is configured
+  const config = loadConfig();
+  if (config.email?.resend?.apiKey) {
+    const resendClient = getResendClient();
+    if (!resendClient) {
+      throw new Error('Resend client not initialized');
+    }
+
+    const result = await sendViaResend({
+      from: config.email.resend.fromEmail,
+      to,
+      subject,
+      text,
+      html,
+      cc,
+      bcc,
+      replyTo,
+    });
+
+    addNotification(`mail sent to ${to} ✓`);
+
+    return {
+      success: true,
+      messageId: result.id,
+      accepted: [to],
+      message: `Email successfully sent to ${to}`,
+    };
+  }
+
+  // Fall back to SMTP
+  const transport = getSmtpTransport();
+  if (!transport) {
+    throw new Error('SMTP transport not configured');
   }
 
   const mailOptions = {
