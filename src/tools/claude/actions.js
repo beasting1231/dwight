@@ -17,7 +17,7 @@ import {
 } from '../../state.js';
 import { spawnClaudeSession, resumeClaudeSession } from './client.js';
 import { parseStreamEvent, generateCompletionSummary, detectQuestionInText } from './parser.js';
-import { saveSessions } from './storage.js';
+import { saveSessions, loadSessionCounter, saveSessionCounter } from './storage.js';
 
 /**
  * Start a new Claude Code session
@@ -36,7 +36,7 @@ export async function startSession(params, ctx) {
     return { error: 'Prompt is required' };
   }
 
-  const sessionId = `claude_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = getNextSessionId();
   const cwd = workingDir || os.homedir();
 
   // Create session in state
@@ -83,6 +83,18 @@ const PROGRESS_UPDATE_INTERVAL = 2 * 60 * 1000;
 
 // Track last progress notification per session
 const lastProgressNotification = new Map();
+
+// Simple session counter (loaded from storage on first use)
+let sessionCounter = null;
+
+function getNextSessionId() {
+  if (sessionCounter === null) {
+    sessionCounter = loadSessionCounter();
+  }
+  sessionCounter++;
+  saveSessionCounter(sessionCounter);
+  return `claude_${sessionCounter}`;
+}
 
 /**
  * Check if we should send a progress update

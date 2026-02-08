@@ -9,6 +9,7 @@ import os from 'os';
 
 const DWIGHT_DIR = path.join(os.homedir(), '.dwight');
 const SESSIONS_FILE = path.join(DWIGHT_DIR, 'claude-sessions.json');
+const COUNTER_FILE = path.join(DWIGHT_DIR, 'claude-counter.txt');
 
 /**
  * Ensure the storage directory exists
@@ -74,5 +75,35 @@ export function clearSavedSessions() {
     }
   } catch (error) {
     console.error('Failed to clear Claude sessions:', error.message);
+  }
+}
+
+/**
+ * Load session counter from disk
+ * @returns {number} Current counter value
+ */
+export function loadSessionCounter() {
+  try {
+    ensureDir();
+    if (fs.existsSync(COUNTER_FILE)) {
+      const data = fs.readFileSync(COUNTER_FILE, 'utf-8');
+      return parseInt(data, 10) || 0;
+    }
+  } catch (error) {
+    console.error('Failed to load session counter:', error.message);
+  }
+  return 0;
+}
+
+/**
+ * Save session counter to disk
+ * @param {number} counter - Counter value to save
+ */
+export function saveSessionCounter(counter) {
+  try {
+    ensureDir();
+    fs.writeFileSync(COUNTER_FILE, String(counter));
+  } catch (error) {
+    console.error('Failed to save session counter:', error.message);
   }
 }
