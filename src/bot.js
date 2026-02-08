@@ -508,27 +508,38 @@ export async function startBot(config) {
     const stripAnsi = (str) => str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
 
     const extractUrl = (text) => {
-      // Look for the OAuth URL - it spans multiple lines so we need to handle that
-      // The URL looks like: https://claude.ai/oauth/authorize?code=true&client_id=...
+      // The OAuth URL spans multiple lines in terminal output, so we need special handling
+      // Look for https://claude.ai/oauth and grab everything until a known end marker
+      const oauthStart = text.indexOf('https://claude.ai/oauth');
+      if (oauthStart !== -1) {
+        // Find where the URL ends - look for known end markers
+        const endMarkers = ['Paste code', 'paste code', '\n\n', 'Press', 'Enter', 'prompted'];
+        let endPos = text.length;
+        for (const marker of endMarkers) {
+          const pos = text.indexOf(marker, oauthStart);
+          if (pos !== -1 && pos < endPos) endPos = pos;
+        }
+
+        let url = text.slice(oauthStart, endPos);
+        // Remove newlines and extra whitespace from the URL (TUI wraps long URLs)
+        url = url.replace(/[\n\r\s]+/g, '');
+        // Clean trailing garbage
+        url = url.replace(/[)\]}>.,]+$/, '');
+
+        if (url.includes('client_id')) {
+          return url;
+        }
+      }
+
+      // Fallback: try simple pattern matching
       const patterns = [
-        // Main OAuth URL pattern - capture everything until whitespace or control chars
-        /(https:\/\/claude\.ai\/oauth\/authorize\?[^\s\x00-\x1F]+)/,
-        // Fallback patterns
         /(https:\/\/console\.anthropic\.com\/[^\s"'<>\x00-\x1F]+)/,
         /(https:\/\/claude\.ai\/[^\s"'<>\x00-\x1F]+)/,
-        /(https:\/\/[^\s"'<>\x00-\x1F]*oauth[^\s"'<>\x00-\x1F]*)/i,
       ];
       for (const pattern of patterns) {
         const match = text.match(pattern);
         if (match) {
-          let url = match[1];
-          // Clean up any trailing garbage
-          url = url.replace(/[)\]}>.,\s]+$/, '');
-          // Make sure URL has required OAuth params
-          if (url.includes('oauth') && url.includes('client_id')) {
-            return url;
-          }
-          return url;
+          return match[1].replace(/[)\]}>.,\s]+$/, '');
         }
       }
       return null;
