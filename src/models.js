@@ -21,6 +21,23 @@ export const MODELS = {
   ]
 };
 
+/**
+ * Check if a model supports vision/image input
+ */
+export function supportsVision(model) {
+  if (!model) return false;
+  const name = model.toLowerCase();
+
+  // Models that support vision
+  if (name.includes('claude')) return true;
+  if (name.includes('gemini')) return true;
+  if (name.includes('gpt-4') || name.includes('gpt-5')) return true;
+
+  // Models that don't support vision
+  // deepseek, mistral, qwen, llama - text only
+  return false;
+}
+
 export function getModelShortName(model) {
   if (!model) return 'Not set';
   const parts = model.split('/');

@@ -4,6 +4,8 @@
 
 import { GoogleGenAI } from '@google/genai';
 import { loadConfig } from '../../config.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 let genaiClient = null;
 
@@ -24,21 +26,57 @@ export function getGenAIClient() {
 }
 
 /**
- * Generate an image from a text prompt
+ * Generate an image from a text prompt, optionally with a reference image
  * @param {Object} options
  * @param {string} options.prompt - Text description of the image
+ * @param {string} options.referenceImage - Optional: path to reference image
  * @param {string} options.aspectRatio - Aspect ratio (1:1, 16:9, 9:16, 4:3, 3:4)
  * @param {string} options.quality - Output quality (standard, 4k)
  * @returns {Promise<Buffer>} Image buffer (PNG)
  */
 export async function generateImage(options) {
-  const { prompt, aspectRatio = '1:1', quality = 'standard' } = options;
+  const { prompt, referenceImage, aspectRatio = '1:1', quality = 'standard' } = options;
 
   const client = getGenAIClient();
 
+  // Build contents - either just prompt, or reference image + prompt
+  let contents;
+  if (referenceImage) {
+    // Load reference image and include it with the prompt
+    const refPath = referenceImage.startsWith('~')
+      ? referenceImage.replace('~', process.env.HOME || '')
+      : referenceImage;
+
+    try {
+      const buffer = await fs.readFile(refPath);
+      const ext = path.extname(refPath).toLowerCase();
+      const mimeTypes = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+      };
+
+      contents = [
+        {
+          inlineData: {
+            data: buffer.toString('base64'),
+            mimeType: mimeTypes[ext] || 'image/png',
+          },
+        },
+        { text: `Using this person as reference, generate: ${prompt}` },
+      ];
+    } catch (err) {
+      throw new Error(`Failed to load reference image: ${err.message}`);
+    }
+  } else {
+    contents = prompt;
+  }
+
   const response = await client.models.generateContent({
     model: 'gemini-3-pro-image-preview',
-    contents: prompt,
+    contents,
     config: {
       responseModalities: ['image', 'text'],
       imageConfig: {
@@ -89,19 +127,49 @@ export async function editImage(options) {
       },
     };
   } else if (typeof image === 'string') {
-    // Fetch image from URL
-    const response = await fetch(image);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image from URL: ${response.status}`);
+    // Check if it's a local file path or a URL
+    const isLocalPath = image.startsWith('/') || image.startsWith('~') || /^[a-zA-Z]:/.test(image);
+
+    if (isLocalPath) {
+      // Read local file
+      const filePath = image.startsWith('~')
+        ? image.replace('~', process.env.HOME || '')
+        : image;
+
+      try {
+        const buffer = await fs.readFile(filePath);
+        const ext = path.extname(filePath).toLowerCase();
+        const mimeTypes = {
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.png': 'image/png',
+          '.gif': 'image/gif',
+          '.webp': 'image/webp',
+        };
+        imageData = {
+          inlineData: {
+            data: buffer.toString('base64'),
+            mimeType: mimeTypes[ext] || 'image/png',
+          },
+        };
+      } catch (err) {
+        throw new Error(`Failed to read local image file: ${err.message}`);
+      }
+    } else {
+      // Fetch image from URL
+      const response = await fetch(image);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image from URL: ${response.status}`);
+      }
+      const buffer = await response.arrayBuffer();
+      const mimeType = response.headers.get('content-type') || 'image/png';
+      imageData = {
+        inlineData: {
+          data: Buffer.from(buffer).toString('base64'),
+          mimeType,
+        },
+      };
     }
-    const buffer = await response.arrayBuffer();
-    const mimeType = response.headers.get('content-type') || 'image/png';
-    imageData = {
-      inlineData: {
-        data: Buffer.from(buffer).toString('base64'),
-        mimeType,
-      },
-    };
   } else {
     throw new Error('Invalid image input: expected Buffer or URL string');
   }

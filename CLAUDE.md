@@ -15,6 +15,7 @@ src/
 ├── cli.js          # CLI command handlers
 ├── ui.js           # UI drawing and display functions
 ├── onboarding.js   # Setup wizard
+├── whisper.js      # Local Whisper transcription for voice messages
 └── tools/          # AI tools directory
     ├── index.js    # Tool registry and executor
     ├── email/      # Email tool
@@ -28,11 +29,17 @@ src/
     │   ├── actions.js  # Search and fetch operations
     │   ├── cache.js    # 15-minute result cache
     │   └── setup.js    # API key setup wizard
-    └── image/      # Image generation tool (Gemini/Nano Banana Pro)
+    ├── image/      # Image generation tool (Gemini/Nano Banana Pro)
+    │   ├── index.js    # Tool definitions and exports
+    │   ├── client.js   # Google GenAI API client
+    │   ├── actions.js  # Background image generation
+    │   └── setup.js    # API key setup wizard
+    └── cron/       # Scheduled tasks (cron jobs)
         ├── index.js    # Tool definitions and exports
-        ├── client.js   # Google GenAI API client
-        ├── actions.js  # Background image generation
-        └── setup.js    # API key setup wizard
+        ├── storage.js  # JSON file operations (~/.dwight/crons.json)
+        ├── scheduler.js # Background loop (60s interval)
+        ├── patterns.js # Next-run calculation for all pattern types
+        └── actions.js  # CRUD operations
 
 scripts/
 └── email-watcher.js  # Standalone email notification script
@@ -52,7 +59,9 @@ tests/
 ├── ai.test.js
 ├── email.test.js
 ├── web.test.js
-└── image.test.js
+├── image.test.js
+├── cron.test.js
+└── whisper.test.js
 ```
 
 ## Rules for Claude Code

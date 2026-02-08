@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
 import { validatePath, ensureAbsolutePath } from './security.js';
+import { addPhotoNotification } from '../../state.js';
 
 /**
  * Read file contents with optional line range
@@ -815,4 +816,61 @@ function formatBytes(bytes) {
 function formatPermissions(mode) {
   const octal = (mode & 0o777).toString(8);
   return octal;
+}
+
+/**
+ * Send an image file to the user via Telegram
+ * @param {string} filePath - Path to the image file
+ * @param {string} caption - Optional caption
+ * @param {number} chatId - Chat ID to send to
+ * @returns {Promise<Object>}
+ */
+export async function sendPhotoFile(filePath, caption = '', chatId) {
+  if (!chatId) {
+    return { error: 'No chat context available to send photo' };
+  }
+
+  const absolutePath = ensureAbsolutePath(filePath);
+
+  // Validate path security
+  const validation = validatePath(absolutePath);
+  if (!validation.valid) {
+    return { error: validation.error };
+  }
+
+  // Check file extension is an image
+  const ext = path.extname(absolutePath).toLowerCase();
+  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+  if (!imageExtensions.includes(ext)) {
+    return { error: `Not an image file. Supported formats: ${imageExtensions.join(', ')}` };
+  }
+
+  try {
+    // Check file exists
+    const stats = await fs.stat(absolutePath);
+    if (!stats.isFile()) {
+      return { error: `'${filePath}' is not a file` };
+    }
+
+    // Read the file
+    const buffer = await fs.readFile(absolutePath);
+
+    // Queue it to be sent
+    addPhotoNotification(chatId, buffer, caption || '');
+
+    return {
+      success: true,
+      message: `Photo queued for delivery: ${path.basename(absolutePath)}`,
+      path: absolutePath,
+      size: stats.size,
+    };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { error: `File not found: ${filePath}` };
+    }
+    if (error.code === 'EACCES') {
+      return { error: `Permission denied: ${filePath}` };
+    }
+    return { error: error.message };
+  }
 }

@@ -6,7 +6,8 @@ import chalk from 'chalk';
 import readline from 'readline';
 import TelegramBot from 'node-telegram-bot-api';
 import { loadConfig, saveVerifiedUser } from './config.js';
-import { getModelShortName } from './models.js';
+import { getModelShortName, supportsVision } from './models.js';
+import { transcribeBuffer, isWhisperAvailable } from './whisper.js';
 import {
   conversations,
   verifiedUsers,
@@ -19,6 +20,7 @@ import {
   getChatsWithPendingPhotos,
   getRunningTasks,
   addToolLog,
+  clearToolLog,
   checkAndClearReload,
   markPendingEmailConfirmable,
   confirmPendingBashCommand,
@@ -36,9 +38,11 @@ import {
   handleWebCommand,
   handleImageCommand,
   handleCalendarCommand,
-  handleLogsCommand
+  handleLogsCommand,
+  handleCronCommand
 } from './cli.js';
-import { initializeTools, cleanupTools } from './tools/index.js';
+import { initializeTools, cleanupTools, startScheduler, stopScheduler, getSchedulerStatus } from './tools/index.js';
+import { formatPattern } from './tools/cron/patterns.js';
 import { needsOnboarding, processOnboarding } from './chatOnboarding.js';
 
 export async function startBot(config) {
@@ -69,6 +73,7 @@ export async function startBot(config) {
     { command: 'start', description: 'Start the bot' },
     { command: 'clear', description: 'Clear conversation history' },
     { command: 'restart', description: 'Reload config and memory' },
+    { command: 'update', description: 'Update to latest version' },
   ]);
 
   // Handle /start command
@@ -89,6 +94,7 @@ export async function startBot(config) {
   bot.onText(/\/clear/, (msg) => {
     const chatId = msg.chat.id;
     conversations.delete(chatId);
+    clearToolLog();
     bot.sendMessage(chatId, '🗑️ Conversation cleared! Starting fresh.');
   });
 
@@ -96,9 +102,54 @@ export async function startBot(config) {
   bot.onText(/\/restart/, (msg) => {
     const chatId = msg.chat.id;
     Object.assign(config, loadConfig());
-    addToolLog({ tool: 'restart', status: 'success', detail: 'config reloaded' });
+    clearToolLog();
     drawUI(config, 'online');
     bot.sendMessage(chatId, '🔄 Restarted! Config and memory reloaded.');
+  });
+
+  // Handle /update command to pull latest code and restart
+  bot.onText(/\/update/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    // Only allow verified users
+    const allowedPhones = config.telegram.allowedPhones || [];
+    if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to update.');
+      return;
+    }
+
+    await bot.sendMessage(chatId, '🔄 Updating Dwight...');
+
+    try {
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+
+      // Get the project directory
+      const path = await import('path');
+      const { fileURLToPath } = await import('url');
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const projectDir = path.join(__dirname, '..');
+
+      // Run git pull
+      await bot.sendMessage(chatId, '📥 Pulling latest changes...');
+      const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
+      console.log(chalk.cyan('  git pull: ' + gitOut.trim()));
+
+      // Run install script for system deps + npm
+      await bot.sendMessage(chatId, '📦 Installing dependencies...');
+      await execAsync('./install.sh', { cwd: projectDir });
+
+      await bot.sendMessage(chatId, '✅ Update complete! Restarting...');
+
+      // Exit process - systemd will restart us
+      setTimeout(() => {
+        process.exit(0);
+      }, 500);
+    } catch (error) {
+      console.log(chalk.red('  Update failed: ' + error.message));
+      bot.sendMessage(chatId, `❌ Update failed: ${error.message}`);
+    }
   });
 
   // Handle contact sharing for phone verification
@@ -153,8 +204,122 @@ export async function startBot(config) {
       return;
     }
 
-    const userMessage = msg.text;
-    if (!userMessage) return;
+    // Handle voice messages
+    const hasVoice = msg.voice || msg.audio;
+    let voiceTranscription = null;
+
+    if (hasVoice) {
+      console.log(chalk.cyan(`  🎤 Voice message received from ${chatId}`));
+      try {
+        // Check if whisper is available
+        console.log(chalk.gray('  Checking whisper availability...'));
+        const whisperAvailable = await isWhisperAvailable();
+        if (!whisperAvailable) {
+          console.log(chalk.red('  Whisper not available'));
+          bot.sendMessage(chatId, '❌ Voice transcription not available. Install Whisper with: pip install openai-whisper');
+          return;
+        }
+        console.log(chalk.gray('  Whisper available, downloading audio...'));
+
+        // Show recording indicator while transcribing
+        bot.sendChatAction(chatId, 'typing');
+
+        // Get the voice/audio file
+        const fileId = msg.voice?.file_id || msg.audio?.file_id;
+        const fileLink = await bot.getFileLink(fileId);
+        console.log(chalk.gray(`  Downloading: ${fileLink}`));
+        const response = await fetch(fileLink);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        console.log(chalk.gray(`  Downloaded ${buffer.length} bytes`));
+
+        // Determine format from file extension
+        const ext = fileLink.split('.').pop().toLowerCase() || 'ogg';
+        console.log(chalk.gray(`  Format: ${ext}, transcribing...`));
+
+        // Transcribe
+        voiceTranscription = await transcribeBuffer(buffer, ext);
+        console.log(chalk.green(`  Transcribed: "${voiceTranscription}"`));
+
+        if (!voiceTranscription || !voiceTranscription.trim()) {
+          bot.sendMessage(chatId, '🔇 Could not transcribe the voice message. Please try again or send text.');
+          return;
+        }
+      } catch (error) {
+        console.log(chalk.red(`  Failed to transcribe voice: ${error.message}`));
+        console.log(chalk.red(`  ${error.stack}`));
+        bot.sendMessage(chatId, `❌ Failed to transcribe voice message: ${error.message}`);
+        return;
+      }
+    }
+
+    // Handle text or photo messages
+    const userMessage = voiceTranscription || msg.text || msg.caption || '';
+    const hasPhoto = msg.photo && msg.photo.length > 0;
+
+    // Skip if no text and no photo and no voice
+    if (!userMessage && !hasPhoto) return;
+
+    // Download photo if present
+    let image = null;
+    let savedImagePath = null;
+    if (hasPhoto) {
+      try {
+        // Get the largest photo (last in array)
+        const photo = msg.photo[msg.photo.length - 1];
+        const fileLink = await bot.getFileLink(photo.file_id);
+        const response = await fetch(fileLink);
+        const buffer = Buffer.from(await response.arrayBuffer());
+
+        // Determine mime type from file extension
+        const ext = fileLink.split('.').pop().toLowerCase();
+        const mimeTypes = {
+          jpg: 'image/jpeg',
+          jpeg: 'image/jpeg',
+          png: 'image/png',
+          gif: 'image/gif',
+          webp: 'image/webp',
+        };
+        const mimeType = mimeTypes[ext] || 'image/jpeg';
+
+        // Always save the image to a file so AI can reference/move it
+        const fs = await import('fs');
+        const path = await import('path');
+        const os = await import('os');
+        const imagesDir = path.default.join(os.default.homedir(), '.dwight', 'received');
+        if (!fs.default.existsSync(imagesDir)) {
+          fs.default.mkdirSync(imagesDir, { recursive: true });
+        }
+        const timestamp = Date.now();
+        const filename = `${chatId}_${timestamp}.${ext || 'jpg'}`;
+        savedImagePath = path.default.join(imagesDir, filename);
+        fs.default.writeFileSync(savedImagePath, buffer);
+
+        // Only include image for vision if model supports it
+        if (supportsVision(config.ai.model)) {
+          image = {
+            base64: buffer.toString('base64'),
+            mimeType,
+          };
+        }
+      } catch (error) {
+        console.log(chalk.red(`  Failed to download photo: ${error.message}`));
+        bot.sendMessage(chatId, '❌ Failed to process the image. Please try again.');
+        return;
+      }
+    }
+
+    // Build the message - always include image path so AI can rename/move it if asked
+    let finalMessage = userMessage;
+
+    // Add voice transcription context
+    if (voiceTranscription) {
+      finalMessage = `[Voice message transcription]: ${voiceTranscription}`;
+    }
+
+    if (savedImagePath) {
+      const pathNote = `\n\n[User sent an image. Saved to: ${savedImagePath}. If user asks to save/remember it, rename to a descriptive name and update memory.]`;
+      finalMessage = (userMessage || 'User sent an image.') + pathNote;
+    }
 
     // Check if onboarding is needed
     if (needsOnboarding(chatId)) {
@@ -190,7 +355,7 @@ export async function startBot(config) {
     drawUI(config, 'processing');
 
     try {
-      const response = await getAIResponse(config, chatId, userMessage);
+      const response = await getAIResponse(config, chatId, finalMessage, image);
 
       // Send response
       const isEmailConfirmation = response && /^(email|mail)\s+(sent|delivered)/i.test(response.trim());
@@ -250,6 +415,87 @@ export async function startBot(config) {
 
   // Handle polling errors silently
   bot.on('polling_error', () => {});
+
+  // Get the default chat ID for cron executions (first verified user or config owner)
+  const getDefaultChatId = () => {
+    // Try to get the first verified user
+    for (const [chatId] of verifiedUsers) {
+      return chatId;
+    }
+    // Fallback: check config for owner chat
+    if (config.telegram?.ownerChatId) {
+      return config.telegram.ownerChatId;
+    }
+    return null;
+  };
+
+  // Start the cron scheduler
+  startScheduler({
+    onExecute: async (cron) => {
+      const chatId = getDefaultChatId();
+      if (!chatId) {
+        console.log(chalk.yellow(`  ⏰ Cron "${cron.description}" fired but no chat to send to`));
+        return;
+      }
+
+      console.log(chalk.cyan(`  ⏰ Executing cron: ${cron.description}`));
+      addToolLog({ tool: 'cron', status: 'running', detail: cron.description });
+
+      try {
+        // Show typing indicator
+        bot.sendChatAction(chatId, 'typing');
+
+        // Execute the cron's prompt as if user sent it
+        incrementProcessing();
+        drawUI(config, 'processing');
+
+        const response = await getAIResponse(config, chatId, cron.prompt);
+
+        if (response && response.trim()) {
+          // Prepend a note that this is from a scheduled task
+          const cronNote = `⏰ *Scheduled task: ${cron.description}*\n\n`;
+          const fullResponse = cronNote + response;
+
+          if (fullResponse.length > 4096) {
+            const chunks = fullResponse.match(/.{1,4096}/gs) || [];
+            for (const chunk of chunks) {
+              await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' }).catch(() => {
+                bot.sendMessage(chatId, chunk);
+              });
+            }
+          } else {
+            await bot.sendMessage(chatId, fullResponse, { parse_mode: 'Markdown' }).catch(() => {
+              bot.sendMessage(chatId, fullResponse);
+            });
+          }
+        }
+
+        addToolLog({ tool: 'cron', status: 'success', detail: cron.description });
+      } catch (error) {
+        console.log(chalk.red(`  ⏰ Cron error: ${error.message}`));
+        addToolLog({ tool: 'cron', status: 'error', detail: error.message });
+        await bot.sendMessage(chatId, `⏰ Scheduled task "${cron.description}" failed: ${error.message}`);
+      } finally {
+        decrementProcessing();
+        drawUI(config, getProcessingCount() > 0 ? 'processing' : 'online');
+      }
+    },
+    onMissed: async (missedCrons) => {
+      const chatId = getDefaultChatId();
+      if (!chatId || missedCrons.length === 0) return;
+
+      // Format missed crons message
+      const cronList = missedCrons.map(c =>
+        `• ${c.description} (was due: ${new Date(c.nextRun).toLocaleString()})`
+      ).join('\n');
+
+      const message = `⏰ *Missed scheduled tasks*\n\nThese tasks were due while I was offline:\n\n${cronList}\n\nWould you like me to run them now? Reply "yes" or "run missed crons" to execute them.`;
+
+      await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' }).catch(() => {
+        bot.sendMessage(chatId, message);
+      });
+    },
+  });
 
   // Proactive photo delivery: check for completed background tasks every 2 seconds
   const photoCheckInterval = setInterval(async () => {
@@ -325,7 +571,7 @@ export async function startBot(config) {
           break;
 
         case 'restart':
-          addToolLog({ tool: 'restart', status: 'success', detail: 'full restart' });
+          clearToolLog();
           bot.stopPolling();
           rl.close();
           await sleep(300);
@@ -402,11 +648,51 @@ export async function startBot(config) {
           handleHelpCommand(config);
           break;
 
+        case 'cron':
+        case 'crons':
+          await handleCronCommand(config, rl);
+          drawUI(config, 'online');
+          break;
+
+        case 'update':
+          console.log(chalk.cyan('\n  🔄 Updating Dwight...\n'));
+          try {
+            const { exec } = await import('child_process');
+            const { promisify } = await import('util');
+            const execAsync = promisify(exec);
+            const path = await import('path');
+            const { fileURLToPath } = await import('url');
+            const __dirname = path.dirname(fileURLToPath(import.meta.url));
+            const projectDir = path.join(__dirname, '..');
+
+            console.log(chalk.gray('  Pulling latest changes...'));
+            const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
+            console.log(chalk.gray('  ' + gitOut.trim()));
+
+            console.log(chalk.gray('  Installing dependencies...'));
+            await execAsync('./install.sh', { cwd: projectDir });
+
+            console.log(chalk.green('\n  ✅ Update complete! Restarting...\n'));
+            clearInterval(photoCheckInterval);
+            clearInterval(uiRefreshInterval);
+            stopScheduler();
+            bot.stopPolling();
+            rl.close();
+            await sleep(300);
+            await startBot(loadConfig());
+            return;
+          } catch (error) {
+            console.log(chalk.red(`\n  ❌ Update failed: ${error.message}\n`));
+            drawUI(config, 'online');
+          }
+          break;
+
         case 'quit':
         case 'exit':
         case 'back':
           clearInterval(photoCheckInterval);
           clearInterval(uiRefreshInterval);
+          stopScheduler();
           bot.stopPolling();
           rl.close();
           resolve(); // Return to main menu

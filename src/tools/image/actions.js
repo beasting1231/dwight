@@ -29,6 +29,7 @@ function truncate(str, len) {
  * Start image generation as a background task
  * @param {Object} params - Generation parameters
  * @param {string} params.prompt - Image description
+ * @param {string} params.referenceImage - Optional reference image path
  * @param {string} params.aspectRatio - Aspect ratio
  * @param {string} params.quality - Output quality
  * @param {string|number} chatId - Chat to notify when complete
@@ -37,6 +38,7 @@ function truncate(str, len) {
 export async function startImageGeneration(params, chatId) {
   const taskId = createBackgroundTask(chatId, 'image_generate', {
     prompt: params.prompt,
+    referenceImage: params.referenceImage,
     aspectRatio: params.aspectRatio,
     quality: params.quality,
   });
@@ -66,6 +68,7 @@ async function runImageGeneration(taskId, params, chatId) {
   try {
     const imageBuffer = await clientGenerate({
       prompt: params.prompt,
+      referenceImage: params.referenceImage,
       aspectRatio: params.aspectRatio || '1:1',
       quality: params.quality || 'standard',
     });

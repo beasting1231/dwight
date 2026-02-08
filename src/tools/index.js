@@ -6,6 +6,7 @@ import { bashTools, executeBashTool } from './bash/index.js';
 import { webTools, executeWebTool, isWebConfigured } from './web/index.js';
 import { imageTools, executeImageTool, isImageConfigured } from './image/index.js';
 import { calendarTools, executeCalendarTool, isCalendarConfigured } from './calendar/index.js';
+import { cronTools, executeCronTool, startScheduler, stopScheduler, getSchedulerStatus } from './cron/index.js';
 
 /**
  * All available tools for the AI
@@ -19,6 +20,7 @@ export const allTools = [
   ...webTools,
   ...imageTools,
   ...calendarTools,
+  ...cronTools,
 ];
 
 /**
@@ -41,15 +43,16 @@ const toolExecutors = {
   todo_add: (params) => executeMemoryTool('todo_add', params),
   todo_done: (params) => executeMemoryTool('todo_done', params),
   datetime_now: (params) => executeDatetimeTool('datetime_now', params),
-  file_read: (params) => executeFileTool('file_read', params),
-  file_write: (params) => executeFileTool('file_write', params),
-  file_edit: (params) => executeFileTool('file_edit', params),
-  file_list: (params) => executeFileTool('file_list', params),
-  file_search: (params) => executeFileTool('file_search', params),
-  file_delete: (params) => executeFileTool('file_delete', params),
-  file_copy: (params) => executeFileTool('file_copy', params),
-  file_move: (params) => executeFileTool('file_move', params),
-  file_info: (params) => executeFileTool('file_info', params),
+  file_read: (params, ctx) => executeFileTool('file_read', params, ctx),
+  file_write: (params, ctx) => executeFileTool('file_write', params, ctx),
+  file_edit: (params, ctx) => executeFileTool('file_edit', params, ctx),
+  file_list: (params, ctx) => executeFileTool('file_list', params, ctx),
+  file_search: (params, ctx) => executeFileTool('file_search', params, ctx),
+  file_delete: (params, ctx) => executeFileTool('file_delete', params, ctx),
+  file_copy: (params, ctx) => executeFileTool('file_copy', params, ctx),
+  file_move: (params, ctx) => executeFileTool('file_move', params, ctx),
+  file_info: (params, ctx) => executeFileTool('file_info', params, ctx),
+  file_send_photo: (params, ctx) => executeFileTool('file_send_photo', params, ctx),
   bash_run: (params, ctx) => executeBashTool('bash_run', params, ctx),
   bash_pwd: (params, ctx) => executeBashTool('bash_pwd', params, ctx),
   bash_cd: (params, ctx) => executeBashTool('bash_cd', params, ctx),
@@ -62,6 +65,12 @@ const toolExecutors = {
   calendar_create: (params) => executeCalendarTool('calendar_create', params),
   calendar_update: (params) => executeCalendarTool('calendar_update', params),
   calendar_delete: (params) => executeCalendarTool('calendar_delete', params),
+  cron_create: (params) => executeCronTool('cron_create', params),
+  cron_list: (params) => executeCronTool('cron_list', params),
+  cron_get: (params) => executeCronTool('cron_get', params),
+  cron_toggle: (params) => executeCronTool('cron_toggle', params),
+  cron_delete: (params) => executeCronTool('cron_delete', params),
+  cron_update: (params) => executeCronTool('cron_update', params),
 };
 
 // Current chat context for tools that need it
@@ -115,7 +124,11 @@ export async function initializeTools() {
  */
 export async function cleanupTools() {
   await cleanupEmail();
+  stopScheduler();
 }
+
+// Re-export scheduler functions for bot.js
+export { startScheduler, stopScheduler, getSchedulerStatus };
 
 /**
  * Format tools for AI provider

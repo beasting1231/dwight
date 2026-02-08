@@ -25,9 +25,12 @@ This runs as a BACKGROUND TASK - the user can continue chatting while it process
 After calling this tool, tell the user you're generating the image and they'll be notified when done.
 
 IMPORTANT: All generated images are automatically saved locally in the images/ folder.
-The notification will include the full filepath. Use image_list to find saved images.
 
-Use for: creating images, illustrations, art, diagrams, visualizations, photos from text prompts.
+**REFERENCE PHOTOS**: When generating images of KNOWN PEOPLE (the user, their friends, contacts):
+- ALWAYS check memory (user.md, contacts.md) for saved photo paths FIRST
+- If a photo exists, provide it as referenceImage so the generated image resembles them
+- Example: "create an image of me" → look up user's photo in user.md → use as referenceImage
+- Example: "create an image of Jochem" → look up Jochem's photo in contacts.md → use as referenceImage
 
 Tips for better results:
 - Be specific about style (photorealistic, cartoon, watercolor, etc.)
@@ -39,6 +42,10 @@ Tips for better results:
         prompt: {
           type: 'string',
           description: 'Detailed description of the image to generate. Be specific about style, colors, composition, and mood.',
+        },
+        referenceImage: {
+          type: 'string',
+          description: 'Optional: Local file path to a reference image (e.g., photo of a person). The generated image will incorporate/resemble this reference. Use when generating images of known people - look up their photo path in memory first.',
         },
         aspectRatio: {
           type: 'string',
@@ -65,8 +72,9 @@ Use for: modifying images, adding/removing elements, changing styles, enhancing 
 IMPORTANT: If the user just generated an image and wants to edit it, you do NOT need to provide an imageUrl.
 The last generated/edited image is automatically available. Just call this tool with the instruction.
 
-Only provide imageUrl if:
-- The user provides a specific public URL to edit
+Provide imageUrl/imagePath when:
+- The user provides a specific URL or local file path
+- You need to use a saved reference image (e.g., from ~/.dwight/received/ or contacts)
 - You need to edit an image that wasn't just generated
 
 Do NOT try to fetch Telegram image URLs - they are authenticated and will fail.`,
@@ -79,7 +87,7 @@ Do NOT try to fetch Telegram image URLs - they are authenticated and will fail.`
         },
         imageUrl: {
           type: 'string',
-          description: 'Optional: URL of a PUBLIC image to edit. Do not use Telegram URLs. Leave empty to edit the last generated image.',
+          description: 'Optional: URL or LOCAL FILE PATH of an image to edit. Supports both public URLs (https://...) and local paths (/Users/..., ~/.dwight/...). Leave empty to edit the last generated image.',
         },
       },
       required: ['instruction'],
@@ -132,7 +140,12 @@ export async function executeImageTool(toolName, params, ctx = {}) {
         if (!params.prompt?.trim()) {
           return { error: 'A prompt is required to generate an image.' };
         }
-        return await startImageGeneration(params, chatId);
+        return await startImageGeneration({
+          prompt: params.prompt,
+          referenceImage: params.referenceImage,
+          aspectRatio: params.aspectRatio,
+          quality: params.quality,
+        }, chatId);
 
       case 'image_edit':
         if (!params.instruction?.trim()) {

@@ -8,6 +8,7 @@ import {
   copyFile,
   moveFile,
   getFileInfo,
+  sendPhotoFile,
 } from './actions.js';
 
 /**
@@ -220,6 +221,24 @@ export const fileTools = [
       required: ['path'],
     },
   },
+  {
+    name: 'file_send_photo',
+    description: 'Send an image file to the user via Telegram. Use this to share saved photos, screenshots, or any image file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Path to the image file to send (jpg, png, gif, webp)',
+        },
+        caption: {
+          type: 'string',
+          description: 'Optional caption to include with the photo',
+        },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 /**
@@ -228,7 +247,7 @@ export const fileTools = [
  * @param {Object} params - Tool parameters
  * @returns {Promise<Object>} Tool result
  */
-export async function executeFileTool(toolName, params) {
+export async function executeFileTool(toolName, params, context = {}) {
   try {
     switch (toolName) {
       case 'file_read':
@@ -267,6 +286,9 @@ export async function executeFileTool(toolName, params) {
 
       case 'file_info':
         return await getFileInfo(params.path);
+
+      case 'file_send_photo':
+        return await sendPhotoFile(params.path, params.caption, context?.chatId);
 
       default:
         return { error: `Unknown file tool: ${toolName}` };

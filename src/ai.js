@@ -169,9 +169,55 @@ async function processOpenRouterResponse(config, response, history) {
 }
 
 /**
- * Get AI response with optional tool support
+ * Format message content for vision (with image)
+ * @param {string} text - Text message
+ * @param {Object} image - Optional image { base64, mimeType }
+ * @param {string} provider - 'anthropic' or 'openrouter'
+ * @returns {string|Array} Formatted content
  */
-export async function getAIResponse(config, chatId, userMessage) {
+function formatMessageContent(text, image, provider) {
+  if (!image) {
+    return text || '';
+  }
+
+  if (provider === 'anthropic') {
+    const content = [];
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: image.mimeType,
+        data: image.base64,
+      },
+    });
+    if (text) {
+      content.push({ type: 'text', text });
+    }
+    return content;
+  }
+
+  // OpenRouter / OpenAI format
+  const content = [];
+  content.push({
+    type: 'image_url',
+    image_url: {
+      url: `data:${image.mimeType};base64,${image.base64}`,
+    },
+  });
+  if (text) {
+    content.push({ type: 'text', text });
+  }
+  return content;
+}
+
+/**
+ * Get AI response with optional tool support
+ * @param {Object} config - Bot config
+ * @param {number} chatId - Chat ID
+ * @param {string} userMessage - Text message
+ * @param {Object} image - Optional image { base64, mimeType }
+ */
+export async function getAIResponse(config, chatId, userMessage, image = null) {
   // Set current chat context for tools
   setCurrentChatId(chatId);
 
@@ -181,8 +227,11 @@ export async function getAIResponse(config, chatId, userMessage) {
   }
   const history = conversations.get(chatId);
 
+  // Format message content (with or without image)
+  const content = formatMessageContent(userMessage, image, config.ai.provider);
+
   // Add user message to history
-  history.push({ role: 'user', content: userMessage });
+  history.push({ role: 'user', content });
 
   // Keep only last 20 messages to avoid token limits
   if (history.length > 20) {
