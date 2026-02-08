@@ -19,7 +19,9 @@ import { getAllClaudeSessions, createClaudeSession } from '../../state.js';
 export const claudeTools = [
   {
     name: 'claude_start',
-    description: `Start a Claude Code session to work on a coding task.
+    description: `Start a NEW Claude Code session. Only use when no session exists!
+
+IMPORTANT: If a session already exists, use claude_resume instead to continue it.
 
 Claude Code is a powerful AI coding assistant that can:
 - Read, write, and edit files in any codebase
@@ -29,15 +31,7 @@ Claude Code is a powerful AI coding assistant that can:
 - Debug and fix issues
 
 This runs as a BACKGROUND TASK. You'll receive updates as Claude works.
-When Claude needs user input, you can either answer it yourself if you know the answer,
-or ask the user and relay their response.
-When the task completes, you'll get a summary.
-
-Use this for tasks like:
-- "Fix the bug in the login page"
-- "Add unit tests for the user module"
-- "Refactor the database queries"
-- "Create a new API endpoint"`,
+For follow-up messages, use claude_resume NOT claude_start.`,
     parameters: {
       type: 'object',
       properties: {
@@ -135,20 +129,31 @@ Supports partial session ID matching.`,
 
   {
     name: 'claude_resume',
-    description: `Resume a previous Claude Code session.
+    description: `Send a message to an existing Claude Code session.
 
-Continues a session that was previously running. Can optionally provide
-additional instructions to continue with.`,
+IMPORTANT: Use this instead of claude_start when a session already exists!
+This continues the conversation with Claude in the same session context.
+
+When user says things like:
+- "ask claude to..."
+- "tell it to..."
+- "have claude do..."
+And there's already a running/completed session, use claude_resume NOT claude_start.
+
+This preserves:
+- The working directory context
+- Previous conversation history
+- Files Claude has already read`,
     parameters: {
       type: 'object',
       properties: {
         sessionId: {
           type: 'string',
-          description: 'Session ID to resume',
+          description: 'Session ID to resume (use most recent if user doesnt specify)',
         },
         prompt: {
           type: 'string',
-          description: 'Additional instructions for the resumed session (optional)',
+          description: 'The message/instruction to send to Claude',
         },
       },
       required: ['sessionId'],
