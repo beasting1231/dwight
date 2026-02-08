@@ -75,6 +75,30 @@ export async function startSession(params, ctx) {
   };
 }
 
+// Max number of recent activity entries to keep per session
+const MAX_ACTIVITY_ENTRIES = 20;
+
+/**
+ * Add activity entry to session's rolling buffer
+ */
+function addActivityEntry(sessionId, entry) {
+  const session = getClaudeSession(sessionId);
+  if (!session) return;
+
+  const activity = session.recentActivity || [];
+  activity.push({
+    ...entry,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Keep only last N entries
+  if (activity.length > MAX_ACTIVITY_ENTRIES) {
+    activity.shift();
+  }
+
+  updateClaudeSession(sessionId, { recentActivity: activity });
+}
+
 /**
  * Handle events from Claude stream
  */
@@ -88,6 +112,7 @@ function handleClaudeEvent(event, sessionId, chatId) {
       claudeSessionId: parsed.sessionId,
       model: parsed.model,
     });
+    addActivityEntry(sessionId, { type: 'init', model: parsed.model });
   }
 
   // Handle task completion
@@ -95,6 +120,12 @@ function handleClaudeEvent(event, sessionId, chatId) {
     removeRunningTask(sessionId);
 
     const summary = generateCompletionSummary(parsed);
+    addActivityEntry(sessionId, {
+      type: 'complete',
+      success: parsed.success,
+      summary: truncate(summary, 200),
+    });
+
     updateClaudeSession(sessionId, {
       status: parsed.success ? 'completed' : 'error',
       totalCost: parsed.cost || 0,
@@ -113,6 +144,12 @@ function handleClaudeEvent(event, sessionId, chatId) {
 
   // Handle input request (AskUserQuestion)
   if (parsed.needsInput) {
+    addActivityEntry(sessionId, {
+      type: 'question',
+      question: truncate(parsed.question, 200),
+      options: parsed.questionOptions,
+    });
+
     updateClaudeSession(sessionId, {
       status: 'waiting_input',
       pendingQuestion: parsed.question,
@@ -130,8 +167,13 @@ function handleClaudeEvent(event, sessionId, chatId) {
     return;
   }
 
-  // Check for implicit questions in text output
+  // Track text output
   if (parsed.text) {
+    addActivityEntry(sessionId, {
+      type: 'text',
+      content: truncate(parsed.text, 300),
+    });
+
     const implicitQuestion = detectQuestionInText(parsed.text);
     if (implicitQuestion) {
       updateClaudeSession(sessionId, {
@@ -150,6 +192,12 @@ function handleClaudeEvent(event, sessionId, chatId) {
 
   // Track tool usage
   if (parsed.toolName) {
+    addActivityEntry(sessionId, {
+      type: 'tool',
+      name: parsed.toolName,
+      input: parsed.toolInput ? truncate(JSON.stringify(parsed.toolInput), 200) : null,
+    });
+
     updateClaudeSession(sessionId, {
       lastTool: parsed.toolName,
       lastActivity: new Date().toISOString(),
@@ -373,6 +421,8 @@ function formatSessionForDisplay(session) {
     totalCost: session.totalCost,
     pendingQuestion: session.pendingQuestion,
     result: session.result,
+    // Include recent activity so AI can see what Claude is doing
+    recentActivity: session.recentActivity || [],
   };
 }
 

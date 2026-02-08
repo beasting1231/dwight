@@ -87,9 +87,22 @@ The session must be in 'waiting_input' status.`,
 
   {
     name: 'claude_status',
-    description: `Get status of Claude Code sessions.
+    description: `Get detailed status of Claude Code sessions including recent activity.
 
-Returns information about running, waiting, or completed sessions.
+Returns:
+- Session status (running, waiting_input, completed, error)
+- Recent activity log showing what Claude has been doing:
+  - Tool calls (file reads, edits, bash commands)
+  - Text output from Claude
+  - Questions Claude is asking
+- Timestamps to detect if session is stalled (no activity for several minutes)
+
+Use this to:
+- Check if Claude is making progress or stalled
+- See what tools Claude is using
+- Monitor Claude's work in real-time
+- Decide if a session needs to be restarted
+
 If no sessionId provided, lists all sessions for the current chat.`,
     parameters: {
       type: 'object',
