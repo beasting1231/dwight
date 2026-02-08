@@ -2,37 +2,48 @@
 
 set -e
 
-echo "Installing Dwight..."
+echo "Checking dependencies..."
 
 # Detect OS
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
-    echo "Detected macOS"
-
     if ! command -v brew &> /dev/null; then
         echo "Installing Homebrew..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
 
-    echo "Installing Node.js and ffmpeg..."
-    brew install node ffmpeg
+    if ! command -v node &> /dev/null; then
+        echo "Installing Node.js..."
+        brew install node
+    fi
 
-    echo "Installing Whisper..."
-    pip3 install openai-whisper
+    if ! command -v ffmpeg &> /dev/null; then
+        echo "Installing ffmpeg..."
+        brew install ffmpeg
+    fi
+
+    if ! command -v whisper &> /dev/null; then
+        echo "Installing Whisper..."
+        pip3 install openai-whisper
+    fi
 
 elif [[ -f /etc/debian_version ]]; then
     # Ubuntu/Debian
-    echo "Detected Ubuntu/Debian"
+    if ! command -v node &> /dev/null; then
+        echo "Installing Node.js..."
+        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+        sudo apt install -y nodejs
+    fi
 
-    echo "Installing Node.js..."
-    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-    sudo apt install -y nodejs
+    if ! command -v ffmpeg &> /dev/null; then
+        echo "Installing ffmpeg..."
+        sudo apt install -y ffmpeg python3-pip
+    fi
 
-    echo "Installing ffmpeg..."
-    sudo apt install -y ffmpeg python3-pip
-
-    echo "Installing Whisper..."
-    pip3 install openai-whisper --break-system-packages
+    if ! command -v whisper &> /dev/null; then
+        echo "Installing Whisper..."
+        pip3 install openai-whisper --break-system-packages
+    fi
 
 else
     echo "Unsupported OS. Please install manually:"
@@ -42,9 +53,8 @@ else
     exit 1
 fi
 
-# Install npm dependencies
+# Always run npm install to get new packages
 echo "Installing npm dependencies..."
 npm install
 
-echo ""
-echo "Installation complete! Run 'npm start' to start Dwight."
+echo "Done!"
