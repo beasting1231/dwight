@@ -50,6 +50,8 @@ function getTimezoneOffset(timezone) {
  */
 function nextRunOnce(pattern) {
   const target = new Date(pattern.datetime);
+  // Strip seconds and milliseconds for consistent minute-based checking
+  target.setSeconds(0, 0);
   const now = new Date();
   return target > now ? target : null;
 }

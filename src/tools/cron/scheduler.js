@@ -73,8 +73,13 @@ function checkMissedCrons() {
 function checkDueCrons() {
   const due = getDueCrons();
 
+  if (due.length > 0) {
+    console.log(`[Cron] Found ${due.length} due cron(s) to execute`);
+  }
+
   for (const cron of due) {
     if (executeCallback) {
+      console.log(`[Cron] Executing: ${cron.description} (was due: ${cron.nextRun})`);
       // Mark as executed before running to prevent double-execution
       markExecuted(cron.id);
 

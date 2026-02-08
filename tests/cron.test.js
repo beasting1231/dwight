@@ -43,7 +43,11 @@ describe('Cron Patterns', () => {
       };
       const nextRun = calculateNextRun(cron);
       expect(nextRun).toBeInstanceOf(Date);
-      expect(nextRun.getTime()).toBeCloseTo(futureDate.getTime(), -3);
+      // Seconds and milliseconds should be stripped to 0 for minute-based checking
+      expect(nextRun.getSeconds()).toBe(0);
+      expect(nextRun.getMilliseconds()).toBe(0);
+      // Minutes should match
+      expect(nextRun.getMinutes()).toBe(futureDate.getMinutes());
     });
 
     it('calculates next run for weekly pattern', () => {
