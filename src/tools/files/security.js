@@ -13,7 +13,6 @@ const BLOCKED_DIRECTORIES = [
   '/bin',
   '/usr/sbin',
   '/var/log',
-  '/root',
   '/lib',
   '/lib64',
   '/usr/lib',
