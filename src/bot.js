@@ -137,10 +137,45 @@ export async function startBot(config) {
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
       const projectDir = path.join(__dirname, '..');
 
-      // Run git pull
+      // Stash local changes, pull, then merge them
       await bot.sendMessage(chatId, '📥 Pulling latest changes...');
+
+      // Stash any local changes
+      try {
+        await execAsync('git stash', { cwd: projectDir });
+        console.log(chalk.cyan('  git stash: Saved local changes'));
+      } catch (e) {
+        // No changes to stash, continue
+      }
+
+      // Pull latest
       const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
       console.log(chalk.cyan('  git pull: ' + gitOut.trim()));
+
+      // Reapply stashed changes (merge them)
+      try {
+        await execAsync('git stash pop', { cwd: projectDir });
+        console.log(chalk.cyan('  git stash pop: Merged local changes'));
+      } catch (e) {
+        // Conflict occurred - merge both versions
+        const fs = await import('fs');
+        const toolsPath = path.join(projectDir, 'memory', 'tools.md');
+
+        // Keep both ours and theirs
+        await execAsync('git checkout --ours memory/tools.md', { cwd: projectDir }).catch(() => {});
+        const localContent = fs.readFileSync(toolsPath, 'utf8');
+
+        await execAsync('git checkout --theirs memory/tools.md', { cwd: projectDir }).catch(() => {});
+        const remoteContent = fs.readFileSync(toolsPath, 'utf8');
+
+        // Merge: remote content + any unique local content
+        const merged = remoteContent + (localContent.includes(remoteContent) ? '' : '\n\n' + localContent);
+        fs.writeFileSync(toolsPath, merged);
+
+        await execAsync('git add memory/tools.md', { cwd: projectDir });
+        await execAsync('git stash drop', { cwd: projectDir }).catch(() => {});
+        console.log(chalk.cyan('  Conflict resolved: Merged both versions'));
+      }
 
       // Run install script for system deps + npm
       await bot.sendMessage(chatId, '📦 Installing dependencies...');
