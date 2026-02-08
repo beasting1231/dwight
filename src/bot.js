@@ -428,6 +428,94 @@ export async function startBot(config) {
   // Track pending Claude auth sessions
   const pendingClaudeAuth = new Map();
 
+  // Expect script for claude auth (embedded to avoid file system issues)
+  const CLAUDE_AUTH_EXPECT = `#!/usr/bin/expect -f
+set timeout 300
+set url_file [lindex $argv 0]
+set code_file [lindex $argv 1]
+set result_file [lindex $argv 2]
+catch {exec rm -f $url_file $result_file}
+log_user 0
+spawn claude setup-token
+set full_output ""
+set clean_url ""
+expect {
+    "Paste code" { append full_output $expect_out(buffer) }
+    timeout {
+        set fp [open $result_file w]
+        puts $fp "ERROR: Timeout waiting for paste prompt"
+        close $fp
+        exit 1
+    }
+}
+set start_idx [string first "https://claude.ai/oauth" $full_output]
+set end_idx [string first "Paste" $full_output]
+if {$start_idx >= 0 && $end_idx > $start_idx} {
+    set end_minus_one [expr {$end_idx - 1}]
+    set url_chunk [string range $full_output $start_idx $end_minus_one]
+    regsub -all {\\s+} $url_chunk {} clean_url
+    regsub -all {\\[[0-9;]*m} $clean_url {} clean_url
+}
+if {[string length $clean_url] > 50} {
+    set fp [open $url_file w]
+    puts $fp $clean_url
+    close $fp
+}
+if {![file exists $url_file]} {
+    set fp [open $result_file w]
+    puts $fp "ERROR: Could not extract URL"
+    close $fp
+    exit 1
+}
+set wait_count 0
+while {$wait_count < 300} {
+    if {[file exists $code_file]} {
+        set fp [open $code_file r]
+        set code [read $fp]
+        close $fp
+        set code [string trim $code]
+        if {[string length $code] > 5} {
+            catch {exec rm -f $code_file}
+            send "$code\\r"
+            break
+        }
+    }
+    after 1000
+    incr wait_count
+}
+if {$wait_count >= 300} {
+    set fp [open $result_file w]
+    puts $fp "ERROR: Timeout waiting for code"
+    close $fp
+    exit 1
+}
+expect {
+    -re {[Ss]uccess|[Aa]uthenticated|saved} {
+        set fp [open $result_file w]
+        puts $fp "SUCCESS"
+        close $fp
+        exit 0
+    }
+    -re {[Ii]nvalid|[Ff]ailed} {
+        set fp [open $result_file w]
+        puts $fp "ERROR: Auth failed"
+        close $fp
+        exit 1
+    }
+    eof {
+        set fp [open $result_file w]
+        puts $fp "DONE"
+        close $fp
+        exit 0
+    }
+    timeout {
+        set fp [open $result_file w]
+        puts $fp "ERROR: Timeout"
+        close $fp
+        exit 1
+    }
+}`;
+
   // Handle /claudeauth command to authenticate Claude Code CLI
   bot.onText(/\/claudeauth(?:\s+(.*))?/, async (msg, match) => {
     const chatId = msg.chat.id;
@@ -440,14 +528,28 @@ export async function startBot(config) {
       return;
     }
 
+    const { spawn, exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const execAsync = promisify(exec);
+
     // Handle cancel
     if (subcommand === 'cancel') {
       const auth = pendingClaudeAuth.get(chatId);
       if (auth) {
-        if (auth.process) {
-          try { auth.process.kill('SIGKILL'); } catch {}
+        if (auth.expectProc) {
+          try { auth.expectProc.kill('SIGKILL'); } catch {}
         }
-        if (auth.checkInterval) clearInterval(auth.checkInterval);
+        if (auth.pollInterval) clearInterval(auth.pollInterval);
+        // Cleanup temp files
+        try {
+          fs.unlinkSync(auth.urlFile);
+          fs.unlinkSync(auth.codeFile);
+          fs.unlinkSync(auth.resultFile);
+          fs.unlinkSync(auth.scriptFile);
+        } catch {}
         pendingClaudeAuth.delete(chatId);
         await bot.sendMessage(chatId, '❌ Auth cancelled.');
       } else {
@@ -456,16 +558,21 @@ export async function startBot(config) {
       return;
     }
 
-    const { spawn, exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const fs = await import('fs');
-    const os = await import('os');
-    const path = await import('path');
-    const execAsync = promisify(exec);
-
     // Check if already in auth flow
     if (pendingClaudeAuth.has(chatId)) {
       await bot.sendMessage(chatId, '⚠️ Auth already in progress. Use `/claudeauth cancel` to abort.', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    // Check if expect is available
+    try {
+      await execAsync('which expect');
+    } catch {
+      await bot.sendMessage(chatId,
+        '❌ *expect is not installed.*\n\n' +
+        'Install it with: `brew install expect` (macOS) or `apt install expect` (Linux)',
+        { parse_mode: 'Markdown' }
+      );
       return;
     }
 
@@ -481,174 +588,133 @@ export async function startBot(config) {
       return;
     }
 
-    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nI\'ll capture the auth URL and send it to you.');
+    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nCapturing auth URL...');
 
-    // Use script command to capture TUI output to a file
-    const logFile = path.join(os.tmpdir(), `claude-auth-${chatId}-${Date.now()}.log`);
-    console.log(chalk.cyan(`  [claudeauth] Log file: ${logFile}`));
+    // Create temp files for communication with expect script
+    const tmpDir = os.tmpdir();
+    const timestamp = Date.now();
+    const scriptFile = path.join(tmpDir, `claude-auth-${timestamp}.expect`);
+    const urlFile = path.join(tmpDir, `claude-url-${timestamp}.txt`);
+    const codeFile = path.join(tmpDir, `claude-code-${timestamp}.txt`);
+    const resultFile = path.join(tmpDir, `claude-result-${timestamp}.txt`);
 
-    // Create empty log file
-    fs.writeFileSync(logFile, '');
+    // Write expect script
+    fs.writeFileSync(scriptFile, CLAUDE_AUTH_EXPECT);
+    fs.chmodSync(scriptFile, '755');
 
-    // Spawn script command to capture output with stdin pipe
-    const proc = spawn('script', ['-q', '-f', logFile, '-c', 'claude setup-token'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        TERM: 'xterm-256color',
-        COLUMNS: '120',
-        LINES: '40',
-      },
+    console.log(chalk.cyan(`  [claudeauth] Starting expect script`));
+
+    // Run expect script
+    const expectProc = spawn('expect', [scriptFile, urlFile, codeFile, resultFile], {
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let urlSent = false;
     let authComplete = false;
 
-    // Helper to strip ANSI and extract URL
-    const stripAnsi = (str) => str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
-
-    const extractUrl = (text) => {
-      // The OAuth URL spans multiple lines in terminal output, so we need special handling
-      // Look for https://claude.ai/oauth and grab everything until a known end marker
-      const oauthStart = text.indexOf('https://claude.ai/oauth');
-      if (oauthStart !== -1) {
-        // Find where the URL ends - look for known end markers
-        const endMarkers = ['Paste code', 'paste code', '\n\n', 'Press', 'Enter', 'prompted'];
-        let endPos = text.length;
-        for (const marker of endMarkers) {
-          const pos = text.indexOf(marker, oauthStart);
-          if (pos !== -1 && pos < endPos) endPos = pos;
-        }
-
-        let url = text.slice(oauthStart, endPos);
-        // Remove newlines and extra whitespace from the URL (TUI wraps long URLs)
-        url = url.replace(/[\n\r\s]+/g, '');
-        // Clean trailing garbage
-        url = url.replace(/[)\]}>.,]+$/, '');
-
-        if (url.includes('client_id')) {
-          return url;
-        }
-      }
-
-      // Fallback: try simple pattern matching
-      const patterns = [
-        /(https:\/\/console\.anthropic\.com\/[^\s"'<>\x00-\x1F]+)/,
-        /(https:\/\/claude\.ai\/[^\s"'<>\x00-\x1F]+)/,
-      ];
-      for (const pattern of patterns) {
-        const match = text.match(pattern);
-        if (match) {
-          return match[1].replace(/[)\]}>.,\s]+$/, '');
-        }
-      }
-      return null;
-    };
-
-    // Function to send input to the process
-    const sendInput = (text) => {
-      try {
-        if (proc.stdin && proc.stdin.writable) {
-          proc.stdin.write(text);
-          console.log(chalk.cyan(`  [claudeauth] Sent input: ${JSON.stringify(text)}`));
-          return true;
-        }
-      } catch (err) {
-        console.log(chalk.red(`  [claudeauth] Failed to send input: ${err.message}`));
-      }
-      return false;
-    };
-
-    // Check log file periodically for URL
-    const checkInterval = setInterval(async () => {
-      try {
-        if (!fs.existsSync(logFile)) return;
-
-        const content = fs.readFileSync(logFile, 'utf-8');
-        const cleanContent = stripAnsi(content);
-        const lowerContent = cleanContent.toLowerCase();
-
-        console.log(chalk.gray(`  [claudeauth] Log (${content.length}b): ${cleanContent.replace(/\s+/g, ' ').slice(-300)}`));
-
-        // Look for URL
-        if (!urlSent) {
-          const url = extractUrl(cleanContent);
-          if (url) {
+    // Poll for URL file
+    const pollInterval = setInterval(async () => {
+      // Check for URL
+      if (!urlSent && fs.existsSync(urlFile)) {
+        try {
+          const url = fs.readFileSync(urlFile, 'utf8').trim();
+          if (url && url.includes('claude.ai/oauth')) {
             urlSent = true;
-            console.log(chalk.green(`  [claudeauth] Found URL: ${url}`));
+            console.log(chalk.green(`  [claudeauth] Found URL (${url.length} chars)`));
             await bot.sendMessage(chatId,
               '🔗 *Open this URL in your browser:*\n\n' +
               `${url}\n\n` +
-              'After authenticating, you\'ll get a code. Send it back here!',
+              'After authenticating, copy the code and send it back here!',
               { parse_mode: 'Markdown' }
             );
           }
+        } catch (e) {
+          console.log(chalk.gray(`  [claudeauth] URL file read error: ${e.message}`));
         }
+      }
 
-        // Check for success
-        if (cleanContent.toLowerCase().includes('success') ||
-            cleanContent.toLowerCase().includes('authenticated') ||
-            cleanContent.toLowerCase().includes('token saved')) {
+      // Check for result
+      if (fs.existsSync(resultFile)) {
+        try {
+          const result = fs.readFileSync(resultFile, 'utf8').trim();
           authComplete = true;
-          clearInterval(checkInterval);
+          clearInterval(pollInterval);
           pendingClaudeAuth.delete(chatId);
-          try { proc.kill(); } catch {}
-          try { fs.unlinkSync(logFile); } catch {}
-          await bot.sendMessage(chatId, '✅ Claude Code CLI authenticated successfully!');
+
+          // Cleanup temp files
+          try {
+            fs.unlinkSync(urlFile);
+            fs.unlinkSync(codeFile);
+            fs.unlinkSync(resultFile);
+            fs.unlinkSync(scriptFile);
+          } catch {}
+
+          if (result === 'SUCCESS' || result === 'DONE') {
+            await bot.sendMessage(chatId, '✅ Claude Code CLI authenticated successfully!');
+          } else {
+            await bot.sendMessage(chatId, `❌ Authentication failed: ${result}`);
+          }
+
+          try { expectProc.kill(); } catch {}
+        } catch (e) {
+          console.log(chalk.gray(`  [claudeauth] Result file read error: ${e.message}`));
         }
-      } catch (err) {
-        console.log(chalk.red(`  [claudeauth] Check error: ${err.message}`));
       }
     }, 1000);
 
     // Store auth state
     pendingClaudeAuth.set(chatId, {
-      process: proc,
-      logFile,
-      checkInterval,
+      expectProc,
+      pollInterval,
+      urlFile,
+      codeFile,
+      resultFile,
+      scriptFile,
       urlSent: () => urlSent,
-      sendInput,
     });
 
-    proc.on('close', (code) => {
-      console.log(chalk.gray(`  [claudeauth] Process closed with code ${code}`));
+    expectProc.on('close', (code) => {
+      console.log(chalk.gray(`  [claudeauth] Expect process closed with code ${code}`));
       if (!authComplete && pendingClaudeAuth.has(chatId)) {
-        clearInterval(checkInterval);
+        clearInterval(pollInterval);
         pendingClaudeAuth.delete(chatId);
-        try { fs.unlinkSync(logFile); } catch {}
-
         if (!urlSent) {
-          bot.sendMessage(chatId,
-            '❌ Could not capture auth URL.\n\n' +
-            'The `script` command may not be available. Try:\n' +
-            '`apt install bsdutils`',
-            { parse_mode: 'Markdown' }
-          ).catch(() => {});
+          bot.sendMessage(chatId, '❌ Could not capture auth URL. Check server logs for details.').catch(() => {});
         }
+        // Cleanup
+        try {
+          fs.unlinkSync(urlFile);
+          fs.unlinkSync(codeFile);
+          fs.unlinkSync(resultFile);
+          fs.unlinkSync(scriptFile);
+        } catch {}
       }
     });
 
-    proc.on('error', (err) => {
-      console.log(chalk.red(`  [claudeauth] Process error: ${err.message}`));
-      clearInterval(checkInterval);
-      pendingClaudeAuth.delete(chatId);
-      bot.sendMessage(chatId, `❌ Error: ${err.message}`).catch(() => {});
+    expectProc.stderr.on('data', (data) => {
+      console.log(chalk.gray(`  [claudeauth] stderr: ${data.toString().slice(0, 100)}`));
     });
 
     // Timeout after 5 minutes
     setTimeout(() => {
       if (pendingClaudeAuth.has(chatId)) {
         const auth = pendingClaudeAuth.get(chatId);
-        clearInterval(auth.checkInterval);
-        try { auth.process.kill('SIGKILL'); } catch {}
-        try { fs.unlinkSync(auth.logFile); } catch {}
+        clearInterval(auth.pollInterval);
+        try { auth.expectProc.kill('SIGKILL'); } catch {}
+        // Cleanup
+        try {
+          fs.unlinkSync(auth.urlFile);
+          fs.unlinkSync(auth.codeFile);
+          fs.unlinkSync(auth.resultFile);
+          fs.unlinkSync(auth.scriptFile);
+        } catch {}
         pendingClaudeAuth.delete(chatId);
         bot.sendMessage(chatId, '⏰ Auth timed out. Try `/claudeauth` again.', { parse_mode: 'Markdown' }).catch(() => {});
       }
     }, 5 * 60 * 1000);
   });
 
-  // Handle auth token input
+  // Handle auth token input - write code to file for expect script
   bot.on('message', async (msg) => {
     if (msg.text?.startsWith('/')) return;
 
@@ -657,16 +723,19 @@ export async function startBot(config) {
 
     if (!auth || !auth.urlSent || !auth.urlSent()) return;
 
-    const token = msg.text?.trim();
-    if (!token || token.length < 10) return; // Auth tokens are usually longer
+    const code = msg.text?.trim();
+    if (!code || code.length < 10) return; // Auth codes are usually longer
 
-    console.log(chalk.cyan(`  [claudeauth] Received token input: ${token.slice(0, 20)}...`));
+    console.log(chalk.cyan(`  [claudeauth] Received auth code: ${code.slice(0, 20)}...`));
 
-    // Send token via stdin
-    if (auth.sendInput && auth.sendInput(token + '\r')) {
-      await bot.sendMessage(chatId, '📤 Sent token to Claude CLI... waiting for confirmation...');
-    } else {
-      await bot.sendMessage(chatId, '⚠️ Could not send token. Process may have closed. Try `/claudeauth` again.', { parse_mode: 'Markdown' });
+    const fs = await import('fs');
+
+    // Write code to file for expect script to pick up
+    try {
+      fs.writeFileSync(auth.codeFile, code);
+      await bot.sendMessage(chatId, '📤 Sending code to Claude CLI... waiting for confirmation...');
+    } catch (e) {
+      await bot.sendMessage(chatId, '⚠️ Could not process code. Try `/claudeauth` again.', { parse_mode: 'Markdown' });
     }
   });
 
