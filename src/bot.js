@@ -467,28 +467,47 @@ export async function startBot(config) {
     // Helper to strip ANSI escape codes
     const stripAnsi = (str) => str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/\?2026[hl]/g, '');
 
-    // Start claude setup-token (correct command for auth)
-    const proc = spawn('claude', ['setup-token'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        BROWSER: '/bin/false',  // Force browser to fail
-        DISPLAY: '',            // No display
-        TERM: 'dumb',           // Simple terminal
-      },
-    });
+    let proc;
+    try {
+      // Start claude setup-token (correct command for auth)
+      proc = spawn('claude', ['setup-token'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          BROWSER: '/bin/false',  // Force browser to fail
+          DISPLAY: '',            // No display
+          TERM: 'dumb',           // Simple terminal
+        },
+        detached: false,
+      });
+    } catch (spawnError) {
+      console.log(chalk.red('  [claudeauth] Spawn error: ' + spawnError.message));
+      await bot.sendMessage(chatId, `❌ Failed to start auth process: ${spawnError.message}`);
+      return;
+    }
+
+    if (!proc || !proc.pid) {
+      await bot.sendMessage(chatId, '❌ Failed to start auth process. Try running manually via SSH:\n`claude setup-token`', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    console.log(chalk.cyan(`  [claudeauth] Started process with PID ${proc.pid}`));
 
     let output = '';
     let urlSent = false;
 
     const handleOutput = async (data) => {
-      const rawData = data.toString();
-      const cleanData = stripAnsi(rawData);
-      output += cleanData;
+      try {
+        const rawData = data.toString();
+        const cleanData = stripAnsi(rawData);
+        output += cleanData;
 
-      // Log for debugging
-      if (cleanData.trim()) {
-        console.log(chalk.gray('  [claudeauth] ' + cleanData.trim().slice(0, 200)));
+        // Log for debugging
+        if (cleanData.trim()) {
+          console.log(chalk.gray('  [claudeauth] ' + cleanData.trim().slice(0, 200)));
+        }
+      } catch (err) {
+        console.log(chalk.red('  [claudeauth] Output handling error: ' + err.message));
       }
 
       // Look for URL in cleaned output (various patterns)
@@ -532,31 +551,39 @@ export async function startBot(config) {
       }
     };
 
-    proc.stdout.on('data', handleOutput);
-    proc.stderr.on('data', handleOutput);
+    proc.stdout.on('data', (data) => handleOutput(data).catch(e => console.error('[claudeauth] stdout error:', e)));
+    proc.stderr.on('data', (data) => handleOutput(data).catch(e => console.error('[claudeauth] stderr error:', e)));
 
     proc.on('close', (code) => {
-      console.log(chalk.gray(`  [claudeauth] Process exited with code ${code}`));
-      console.log(chalk.gray(`  [claudeauth] Full output: ${output.slice(0, 500)}`));
+      try {
+        console.log(chalk.gray(`  [claudeauth] Process exited with code ${code}`));
+        console.log(chalk.gray(`  [claudeauth] Full output: ${output.slice(0, 500)}`));
 
-      if (pendingClaudeAuth.has(chatId)) {
-        pendingClaudeAuth.delete(chatId);
-        if (!urlSent) {
-          bot.sendMessage(chatId,
-            `❌ Could not get auth URL (exit code: ${code}).\n\n` +
-            `Try manually on your server:\n` +
-            '```\nssh your-server\nclaude setup-token\n```\n' +
-            'Then follow the prompts there.',
-            { parse_mode: 'Markdown' }
-          );
+        if (pendingClaudeAuth.has(chatId)) {
+          pendingClaudeAuth.delete(chatId);
+          if (!urlSent) {
+            bot.sendMessage(chatId,
+              `❌ Could not get auth URL (exit code: ${code}).\n\n` +
+              `Try manually on your server:\n` +
+              '```\nssh your-server\nclaude setup-token\n```\n' +
+              'Then follow the prompts there.',
+              { parse_mode: 'Markdown' }
+            ).catch(e => console.error('[claudeauth] send error:', e));
+          }
         }
+      } catch (e) {
+        console.error('[claudeauth] close handler error:', e);
       }
     });
 
     proc.on('error', (error) => {
-      console.log(chalk.red(`  [claudeauth] Error: ${error.message}`));
-      pendingClaudeAuth.delete(chatId);
-      bot.sendMessage(chatId, `❌ Auth error: ${error.message}`);
+      try {
+        console.log(chalk.red(`  [claudeauth] Error: ${error.message}`));
+        pendingClaudeAuth.delete(chatId);
+        bot.sendMessage(chatId, `❌ Auth error: ${error.message}`).catch(e => console.error('[claudeauth] send error:', e));
+      } catch (e) {
+        console.error('[claudeauth] error handler error:', e);
+      }
     });
 
     // Check if we got a URL after 15 seconds
