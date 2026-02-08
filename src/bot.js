@@ -462,39 +462,71 @@ export async function startBot(config) {
       return;
     }
 
-    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nI\'ll give you a URL to open in your browser.');
+    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nWaiting for auth URL (this may take a few seconds on headless servers)...');
 
-    // Start claude auth login
-    const proc = spawn('claude', ['auth', 'login'], {
+    // Helper to strip ANSI escape codes
+    const stripAnsi = (str) => str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/\?2026[hl]/g, '');
+
+    // Start claude setup-token (correct command for auth)
+    const proc = spawn('claude', ['setup-token'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, BROWSER: 'echo' }, // Prevent auto-opening browser
+      env: {
+        ...process.env,
+        BROWSER: '/bin/false',  // Force browser to fail
+        DISPLAY: '',            // No display
+        TERM: 'dumb',           // Simple terminal
+      },
     });
 
     let output = '';
     let urlSent = false;
 
     const handleOutput = async (data) => {
-      output += data.toString();
-      console.log(chalk.gray('  [claudeauth] ' + data.toString().trim()));
+      const rawData = data.toString();
+      const cleanData = stripAnsi(rawData);
+      output += cleanData;
 
-      // Look for URL in output
-      const urlMatch = output.match(/https:\/\/[^\s]+/);
-      if (urlMatch && !urlSent) {
-        urlSent = true;
-        const authUrl = urlMatch[0];
-        await bot.sendMessage(chatId,
-          '🔗 *Open this URL in your browser to authenticate:*\n\n' +
-          `${authUrl}\n\n` +
-          'After authenticating, you\'ll get a code. Send it here.',
-          { parse_mode: 'Markdown' }
-        );
-
-        // Store the process for later
-        pendingClaudeAuth.set(chatId, { process: proc, stage: 'waiting_code' });
+      // Log for debugging
+      if (cleanData.trim()) {
+        console.log(chalk.gray('  [claudeauth] ' + cleanData.trim().slice(0, 200)));
       }
 
-      // Check for success
-      if (output.includes('Successfully') || output.includes('authenticated') || output.includes('logged in')) {
+      // Look for URL in cleaned output (various patterns)
+      const urlPatterns = [
+        /https:\/\/console\.anthropic\.com[^\s\x00-\x1F]*/,
+        /https:\/\/claude\.ai[^\s\x00-\x1F]*/,
+        /https:\/\/[^\s\x00-\x1F]*auth[^\s\x00-\x1F]*/i,
+        /https:\/\/[^\s\x00-\x1F]*login[^\s\x00-\x1F]*/i,
+        /https:\/\/[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^\s\x00-\x1F]*/,
+      ];
+
+      if (!urlSent) {
+        for (const pattern of urlPatterns) {
+          const urlMatch = output.match(pattern);
+          if (urlMatch) {
+            urlSent = true;
+            let authUrl = urlMatch[0].trim();
+            // Clean up any trailing garbage
+            authUrl = authUrl.replace(/[)\]}>]+$/, '');
+
+            await bot.sendMessage(chatId,
+              '🔗 *Open this URL in your browser to authenticate:*\n\n' +
+              `${authUrl}\n\n` +
+              'After authenticating, copy the token/code you receive and send it here.',
+              { parse_mode: 'Markdown' }
+            );
+
+            // Store the process for later
+            pendingClaudeAuth.set(chatId, { process: proc, stage: 'waiting_code' });
+            break;
+          }
+        }
+      }
+
+      // Check for success messages
+      const successPatterns = ['successfully', 'authenticated', 'logged in', 'token saved', 'complete'];
+      const lowerOutput = output.toLowerCase();
+      if (successPatterns.some(p => lowerOutput.includes(p))) {
         pendingClaudeAuth.delete(chatId);
         await bot.sendMessage(chatId, '✅ Claude Code CLI authenticated successfully! You can now use Claude Code sessions.');
       }
@@ -505,10 +537,18 @@ export async function startBot(config) {
 
     proc.on('close', (code) => {
       console.log(chalk.gray(`  [claudeauth] Process exited with code ${code}`));
+      console.log(chalk.gray(`  [claudeauth] Full output: ${output.slice(0, 500)}`));
+
       if (pendingClaudeAuth.has(chatId)) {
         pendingClaudeAuth.delete(chatId);
-        if (code !== 0 && !urlSent) {
-          bot.sendMessage(chatId, `❌ Auth process failed (exit code: ${code}). Try again or check server logs.`);
+        if (!urlSent) {
+          bot.sendMessage(chatId,
+            `❌ Could not get auth URL (exit code: ${code}).\n\n` +
+            `Try manually on your server:\n` +
+            '```\nssh your-server\nclaude setup-token\n```\n' +
+            'Then follow the prompts there.',
+            { parse_mode: 'Markdown' }
+          );
         }
       }
     });
@@ -518,6 +558,18 @@ export async function startBot(config) {
       pendingClaudeAuth.delete(chatId);
       bot.sendMessage(chatId, `❌ Auth error: ${error.message}`);
     });
+
+    // Check if we got a URL after 15 seconds
+    setTimeout(() => {
+      if (pendingClaudeAuth.has(chatId) && !urlSent) {
+        bot.sendMessage(chatId,
+          '⏳ Still waiting for auth URL...\n\n' +
+          'If this takes too long, the server may already be authenticated, or you may need to authenticate manually:\n' +
+          '```\nssh your-server\nclaude setup-token\n```',
+          { parse_mode: 'Markdown' }
+        );
+      }
+    }, 15 * 1000);
 
     // Timeout after 5 minutes
     setTimeout(() => {
