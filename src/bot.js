@@ -571,6 +571,12 @@ export async function startBot(config) {
     },
   });
 
+  // Notify owner that bot is online
+  const ownerChatId = getDefaultChatId();
+  if (ownerChatId) {
+    bot.sendMessage(ownerChatId, '✅ Dwight is online and ready!').catch(() => {});
+  }
+
   // Proactive photo delivery: check for completed background tasks every 2 seconds
   const photoCheckInterval = setInterval(async () => {
     const chatsWithPhotos = getChatsWithPendingPhotos();
