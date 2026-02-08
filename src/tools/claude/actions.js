@@ -78,6 +78,67 @@ export async function startSession(params, ctx) {
 // Max number of recent activity entries to keep per session
 const MAX_ACTIVITY_ENTRIES = 20;
 
+// Progress update interval (2 minutes)
+const PROGRESS_UPDATE_INTERVAL = 2 * 60 * 1000;
+
+// Track last progress notification per session
+const lastProgressNotification = new Map();
+
+/**
+ * Check if we should send a progress update
+ */
+function shouldSendProgressUpdate(sessionId) {
+  const lastUpdate = lastProgressNotification.get(sessionId);
+  const session = getClaudeSession(sessionId);
+  const activityCount = (session?.recentActivity || []).filter(a => a.type === 'tool').length;
+
+  // Send first update after 3 tool calls
+  if (!lastUpdate && activityCount >= 3) return true;
+
+  // Then every PROGRESS_UPDATE_INTERVAL
+  if (lastUpdate && Date.now() - lastUpdate > PROGRESS_UPDATE_INTERVAL) return true;
+
+  return false;
+}
+
+/**
+ * Send a progress notification for a running session
+ */
+function sendProgressUpdate(sessionId) {
+  const session = getClaudeSession(sessionId);
+  if (!session || session.status !== 'running') return;
+
+  const activity = session.recentActivity || [];
+  if (activity.length === 0) return;
+
+  // Get recent activity summary
+  const recentTools = activity
+    .filter(a => a.type === 'tool')
+    .slice(-3)
+    .map(a => a.name);
+
+  const lastText = activity
+    .filter(a => a.type === 'text')
+    .slice(-1)[0];
+
+  // Build progress message
+  let msg = '🔄 *Claude Code Progress*\n\n';
+
+  if (recentTools.length > 0) {
+    msg += `Recent actions: ${recentTools.join(', ')}\n`;
+  }
+
+  if (lastText && lastText.content) {
+    msg += `\n"${truncate(lastText.content, 150)}"`;
+  }
+
+  const elapsed = Math.round((Date.now() - new Date(session.startedAt).getTime()) / 60000);
+  msg += `\n\n_Running for ${elapsed} min_`;
+
+  addNotification(msg);
+  lastProgressNotification.set(sessionId, Date.now());
+}
+
 /**
  * Add activity entry to session's rolling buffer
  */
@@ -118,6 +179,7 @@ function handleClaudeEvent(event, sessionId, chatId) {
   // Handle task completion
   if (parsed.isComplete) {
     removeRunningTask(sessionId);
+    lastProgressNotification.delete(sessionId); // Cleanup
 
     const summary = generateCompletionSummary(parsed);
     addActivityEntry(sessionId, {
@@ -202,6 +264,11 @@ function handleClaudeEvent(event, sessionId, chatId) {
       lastTool: parsed.toolName,
       lastActivity: new Date().toISOString(),
     });
+
+    // Send periodic progress updates
+    if (shouldSendProgressUpdate(sessionId)) {
+      sendProgressUpdate(sessionId);
+    }
   }
 }
 
@@ -309,6 +376,7 @@ export async function stopSession(params, ctx) {
 
   removeRunningTask(session.id);
   removeClaudeSession(session.id);
+  lastProgressNotification.delete(session.id);
   saveSessions(getAllClaudeSessions());
 
   return {
