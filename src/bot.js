@@ -435,12 +435,13 @@ set url_file [lindex $argv 0]
 set code_file [lindex $argv 1]
 set result_file [lindex $argv 2]
 set log_file [lindex $argv 3]
+set claude_path [lindex $argv 4]
 catch {exec rm -f $url_file $result_file}
 log_user 0
 set logfp [open $log_file w]
-puts $logfp "Starting claude setup-token..."
+puts $logfp "Starting $claude_path setup-token..."
 flush $logfp
-spawn claude setup-token
+spawn $claude_path setup-token
 set full_output ""
 set clean_url ""
 expect {
@@ -631,9 +632,12 @@ expect {
       return;
     }
 
-    // Check if claude is installed
+    // Check if claude is installed and get full path
+    let claudePath;
     try {
-      await execAsync('which claude');
+      const { stdout } = await execAsync('which claude');
+      claudePath = stdout.trim();
+      console.log(chalk.cyan(`  [claudeauth] Claude CLI found at: ${claudePath}`));
     } catch {
       await bot.sendMessage(chatId,
         '❌ *Claude Code CLI is not installed.*\n\n' +
@@ -660,9 +664,14 @@ expect {
 
     console.log(chalk.cyan(`  [claudeauth] Starting expect script, log: ${logFile}`));
 
-    // Run expect script
-    const expectProc = spawn('expect', [scriptFile, urlFile, codeFile, resultFile, logFile], {
+    // Run expect script with browser-blocking env vars
+    const expectProc = spawn('expect', [scriptFile, urlFile, codeFile, resultFile, logFile, claudePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        DISPLAY: '',           // Prevent X11 browser opening
+        BROWSER: '/bin/false', // Prevent CLI browser opening
+      },
     });
 
     let urlSent = false;
