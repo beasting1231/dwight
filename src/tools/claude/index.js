@@ -138,7 +138,9 @@ When user says things like:
 - "ask claude to..."
 - "tell it to..."
 - "have claude do..."
-And there's already a running/completed session, use claude_resume NOT claude_start.
+Use this to send the message to the existing session.
+
+If sessionId is omitted, automatically uses the most recent session.
 
 This preserves:
 - The working directory context
@@ -149,14 +151,14 @@ This preserves:
       properties: {
         sessionId: {
           type: 'string',
-          description: 'Session ID to resume (use most recent if user doesnt specify)',
+          description: 'Session ID (optional - uses most recent session if omitted)',
         },
         prompt: {
           type: 'string',
           description: 'The message/instruction to send to Claude',
         },
       },
-      required: ['sessionId'],
+      required: ['prompt'],
     },
   },
 ];

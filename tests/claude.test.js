@@ -279,7 +279,7 @@ describe('Claude Tool Definitions', () => {
     const resumeTool = claudeTools.find(t => t.name === 'claude_resume');
 
     expect(resumeTool).toBeDefined();
-    expect(resumeTool.parameters.required).toContain('sessionId');
+    expect(resumeTool.parameters.required).toContain('prompt');
   });
 });
 

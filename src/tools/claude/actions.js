@@ -398,38 +398,67 @@ export async function stopSession(params, ctx) {
 }
 
 /**
- * Resume a previous Claude session
+ * Resume a previous Claude session or send a follow-up message
  */
 export async function resumeSession(params, ctx) {
   const { sessionId, prompt } = params;
   const { chatId } = ctx;
 
-  if (!sessionId) {
-    return { error: 'Session ID is required' };
+  if (!prompt) {
+    return { error: 'Prompt/message is required' };
   }
 
-  const session = getClaudeSession(sessionId);
+  // Find session - support partial matching or auto-select most recent
+  const sessions = getClaudeSessionsForChat(chatId);
+  let session;
+
+  if (sessionId) {
+    // Try exact match first, then partial
+    session = sessions.find(s => s.id === sessionId);
+    if (!session) {
+      session = sessions.find(s => s.id.includes(sessionId) || sessionId.includes(s.id.replace('claude_', '')));
+    }
+  } else {
+    // Auto-select most recent session
+    session = sessions[sessions.length - 1];
+  }
+
   if (!session) {
-    return { error: `Session not found: ${sessionId}` };
+    return {
+      error: sessionId
+        ? `Session not found: ${sessionId}`
+        : 'No sessions found. Use claude_start to create one.',
+    };
+  }
+
+  // Check if session is still running
+  if (session.status === 'running' && session.process) {
+    return {
+      error: `Session ${session.id} is still running. Wait for it to complete or stop it first.`,
+      hint: 'Use claude_status to check progress, or claude_stop to terminate.',
+    };
   }
 
   if (!session.claudeSessionId) {
-    return { error: 'Session cannot be resumed - no Claude session ID available' };
+    return {
+      error: `Session ${session.id} cannot be resumed - no Claude session ID available.`,
+      hint: 'The session may have failed before initialization. Start a new session with claude_start.',
+    };
   }
 
   // Spawn resumed session
-  addRunningTask(sessionId, `Claude: resuming...`);
+  addRunningTask(session.id, `Claude: ${truncate(prompt, 30)}`);
 
   const { process: proc, kill } = resumeClaudeSession({
     sessionId: session.claudeSessionId,
     prompt,
     workingDir: session.workingDir,
-    onEvent: (event) => handleClaudeEvent(event, sessionId, chatId),
-    onError: (error) => handleClaudeError(error, sessionId, chatId),
-    onClose: (code) => handleClaudeClose(code, sessionId, chatId),
+    onEvent: (event) => handleClaudeEvent(event, session.id, chatId),
+    onError: (error) => handleClaudeError(error, session.id, chatId),
+    onClose: (code) => handleClaudeClose(code, session.id, chatId),
   });
 
-  updateClaudeSession(sessionId, {
+  updateClaudeSession(session.id, {
     process: proc,
     kill,
     status: 'running',
@@ -440,7 +469,8 @@ export async function resumeSession(params, ctx) {
 
   return {
     success: true,
-    message: `Resumed session ${sessionId.slice(0, 12)}...`,
+    sessionId: session.id,
+    message: `Sent message to ${session.id}`,
   };
 }
 
