@@ -79,6 +79,7 @@ export async function startBot(config) {
     { command: 'update', description: 'Update to latest version' },
     { command: 'cron', description: 'List scheduled tasks' },
     { command: 'claude', description: 'Manage Claude Code sessions' },
+    { command: 'claudeauth', description: 'Authenticate Claude Code CLI' },
     { command: 'stop', description: 'Stop the bot process' },
   ]);
 
@@ -422,6 +423,148 @@ export async function startBot(config) {
       '`/claude clear` - Clear finished sessions',
       { parse_mode: 'Markdown' }
     );
+  });
+
+  // Track pending Claude auth sessions (chatId -> { process, stage })
+  const pendingClaudeAuth = new Map();
+
+  // Handle /claudeauth command to authenticate Claude Code CLI
+  bot.onText(/\/claudeauth/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    // Only allow verified users
+    const allowedPhones = config.telegram.allowedPhones || [];
+    if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to do this.');
+      return;
+    }
+
+    // Check if already in auth flow
+    if (pendingClaudeAuth.has(chatId)) {
+      await bot.sendMessage(chatId, '⚠️ Auth already in progress. Send the auth code, or /claudeauth cancel to abort.');
+      return;
+    }
+
+    // First check if claude is installed
+    const { spawn, exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+
+    try {
+      await execAsync('which claude');
+    } catch {
+      await bot.sendMessage(chatId,
+        '❌ Claude Code CLI is not installed.\n\n' +
+        'Run `/update` first to install it, or manually:\n' +
+        '`npm install -g @anthropic-ai/claude-code`',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nI\'ll give you a URL to open in your browser.');
+
+    // Start claude auth login
+    const proc = spawn('claude', ['auth', 'login'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, BROWSER: 'echo' }, // Prevent auto-opening browser
+    });
+
+    let output = '';
+    let urlSent = false;
+
+    const handleOutput = async (data) => {
+      output += data.toString();
+      console.log(chalk.gray('  [claudeauth] ' + data.toString().trim()));
+
+      // Look for URL in output
+      const urlMatch = output.match(/https:\/\/[^\s]+/);
+      if (urlMatch && !urlSent) {
+        urlSent = true;
+        const authUrl = urlMatch[0];
+        await bot.sendMessage(chatId,
+          '🔗 *Open this URL in your browser to authenticate:*\n\n' +
+          `${authUrl}\n\n` +
+          'After authenticating, you\'ll get a code. Send it here.',
+          { parse_mode: 'Markdown' }
+        );
+
+        // Store the process for later
+        pendingClaudeAuth.set(chatId, { process: proc, stage: 'waiting_code' });
+      }
+
+      // Check for success
+      if (output.includes('Successfully') || output.includes('authenticated') || output.includes('logged in')) {
+        pendingClaudeAuth.delete(chatId);
+        await bot.sendMessage(chatId, '✅ Claude Code CLI authenticated successfully! You can now use Claude Code sessions.');
+      }
+    };
+
+    proc.stdout.on('data', handleOutput);
+    proc.stderr.on('data', handleOutput);
+
+    proc.on('close', (code) => {
+      console.log(chalk.gray(`  [claudeauth] Process exited with code ${code}`));
+      if (pendingClaudeAuth.has(chatId)) {
+        pendingClaudeAuth.delete(chatId);
+        if (code !== 0 && !urlSent) {
+          bot.sendMessage(chatId, `❌ Auth process failed (exit code: ${code}). Try again or check server logs.`);
+        }
+      }
+    });
+
+    proc.on('error', (error) => {
+      console.log(chalk.red(`  [claudeauth] Error: ${error.message}`));
+      pendingClaudeAuth.delete(chatId);
+      bot.sendMessage(chatId, `❌ Auth error: ${error.message}`);
+    });
+
+    // Timeout after 5 minutes
+    setTimeout(() => {
+      if (pendingClaudeAuth.has(chatId)) {
+        const auth = pendingClaudeAuth.get(chatId);
+        if (auth.process && !auth.process.killed) {
+          auth.process.kill();
+        }
+        pendingClaudeAuth.delete(chatId);
+        bot.sendMessage(chatId, '⏰ Auth timed out. Run /claudeauth again to retry.');
+      }
+    }, 5 * 60 * 1000);
+  });
+
+  // Handle auth code input (any message while auth is pending)
+  bot.on('message', async (msg) => {
+    if (msg.text?.startsWith('/')) return; // Skip commands
+
+    const chatId = msg.chat.id;
+    const auth = pendingClaudeAuth.get(chatId);
+
+    if (!auth || auth.stage !== 'waiting_code') return;
+
+    const code = msg.text?.trim();
+    if (!code) return;
+
+    // Check for cancel
+    if (code.toLowerCase() === 'cancel') {
+      if (auth.process && !auth.process.killed) {
+        auth.process.kill();
+      }
+      pendingClaudeAuth.delete(chatId);
+      await bot.sendMessage(chatId, '❌ Auth cancelled.');
+      return;
+    }
+
+    await bot.sendMessage(chatId, '📤 Sending auth code to Claude...');
+
+    // Send the code to the process
+    try {
+      auth.process.stdin.write(code + '\n');
+      auth.stage = 'waiting_result';
+      pendingClaudeAuth.set(chatId, auth);
+    } catch (error) {
+      pendingClaudeAuth.delete(chatId);
+      await bot.sendMessage(chatId, `❌ Failed to send code: ${error.message}`);
+    }
   });
 
   // Handle contact sharing for phone verification
