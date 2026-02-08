@@ -14,13 +14,10 @@ function areToolsEnabled() {
 
 /**
  * Parse text-based tool calls from model output
- * Handles formats like:
- *   ```tool_code
- *   bash_run(command='mkdir ~/projects')
- *   ```
- * or just:
- *   tool_code
- *   bash_run(command='...')
+ * Handles multiple formats:
+ *   1. ```tool_code\nbash_run(command='...')\n```
+ *   2. tool_code\nbash_run(command='...')
+ *   3. tool_code\nprint(default_api.file_list(path = "..."))
  *
  * @param {string} content - The text content from the model
  * @returns {Array} Array of { name, params } objects, empty if none found
@@ -31,34 +28,46 @@ function parseTextToolCalls(content) {
   const toolCalls = [];
   let remaining = content;
 
-  // First, extract fenced code blocks: ```tool_code\nfunc(...)\n```
+  // Pattern 1: Fenced code blocks ```tool_code\nfunc(...)\n```
   const fencedPattern = /```tool_code\s*\n([a-z_]+)\(([^)]*)\)\s*```/gi;
   let match;
   while ((match = fencedPattern.exec(content)) !== null) {
     const toolName = match[1];
     const argsString = match[2];
-
-    // Verify this is a real tool
     if (!getTool(toolName)) continue;
-
-    // Parse the arguments
     const params = parseToolArgs(argsString);
     toolCalls.push({ name: toolName, params });
-
-    // Remove this match from remaining content
     remaining = remaining.replace(match[0], '');
   }
 
-  // Then check for plain text: tool_code\nfunc(...)
+  // Pattern 2: Fenced with print(default_api.func(...))
+  const fencedApiPattern = /```tool_code\s*\nprint\(default_api\.([a-z_]+)\(([^)]*)\)\)\s*```/gi;
+  while ((match = fencedApiPattern.exec(content)) !== null) {
+    const toolName = match[1];
+    const argsString = match[2];
+    if (!getTool(toolName)) continue;
+    const params = parseToolArgs(argsString);
+    toolCalls.push({ name: toolName, params });
+    remaining = remaining.replace(match[0], '');
+  }
+
+  // Pattern 3: Plain tool_code\nfunc(...)
   const plainPattern = /tool_code\s*\n([a-z_]+)\(([^)]*)\)/gi;
   while ((match = plainPattern.exec(remaining)) !== null) {
     const toolName = match[1];
     const argsString = match[2];
-
-    // Verify this is a real tool
     if (!getTool(toolName)) continue;
+    const params = parseToolArgs(argsString);
+    toolCalls.push({ name: toolName, params });
+    remaining = remaining.replace(match[0], '');
+  }
 
-    // Parse the arguments
+  // Pattern 4: Plain tool_code\nprint(default_api.func(...))
+  const plainApiPattern = /tool_code\s*\nprint\(default_api\.([a-z_]+)\(([^)]*)\)\)/gi;
+  while ((match = plainApiPattern.exec(remaining)) !== null) {
+    const toolName = match[1];
+    const argsString = match[2];
+    if (!getTool(toolName)) continue;
     const params = parseToolArgs(argsString);
     toolCalls.push({ name: toolName, params });
   }
@@ -88,10 +97,14 @@ function stripTextToolCalls(content) {
   if (!content || typeof content !== 'string') return content;
 
   return content
-    // Remove markdown fenced tool_code blocks
+    // Remove fenced tool_code blocks: ```tool_code\nfunc(...)\n```
     .replace(/```tool_code\s*\n[a-z_]+\([^)]*\)\s*```/gi, '')
+    // Remove fenced with default_api: ```tool_code\nprint(default_api.func(...))\n```
+    .replace(/```tool_code\s*\nprint\(default_api\.[a-z_]+\([^)]*\)\)\s*```/gi, '')
     // Remove plain tool_code blocks
     .replace(/tool_code\s*\n[a-z_]+\([^)]*\)/gi, '')
+    // Remove plain with default_api
+    .replace(/tool_code\s*\nprint\(default_api\.[a-z_]+\([^)]*\)\)/gi, '')
     .trim();
 }
 
