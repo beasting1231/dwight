@@ -24,6 +24,8 @@ import {
   checkAndClearReload,
   markPendingEmailConfirmable,
   confirmPendingBashCommand,
+  getClaudeSessionsForChat,
+  removeClaudeSession,
 } from './state.js';
 import { getAIResponse } from './ai.js';
 import { drawUI, sleep, updateSpinner } from './ui.js';
@@ -76,6 +78,7 @@ export async function startBot(config) {
     { command: 'restart', description: 'Reload config and memory' },
     { command: 'update', description: 'Update to latest version' },
     { command: 'cron', description: 'List scheduled tasks' },
+    { command: 'claude', description: 'Manage Claude Code sessions' },
     { command: 'stop', description: 'Stop the bot process' },
   ]);
 
@@ -137,40 +140,30 @@ export async function startBot(config) {
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
       const projectDir = path.join(__dirname, '..');
 
-      // Stash local changes, pull, then merge them
+      // Backup user.md (personalized), then pull, then restore
       await bot.sendMessage(chatId, '📥 Pulling latest changes...');
 
-      // Stash any local changes (including untracked files)
-      await execAsync('git add -A && git stash push -u -m "Auto-stash before update"', { cwd: projectDir });
-      console.log(chalk.cyan('  git stash: Saved local changes'));
+      const fs = await import('fs');
+      const userMdPath = path.join(projectDir, 'memory', 'user.md');
+      let userMdBackup = null;
+
+      // Backup user.md if it exists (it's personalized and should be preserved)
+      if (fs.existsSync(userMdPath)) {
+        userMdBackup = fs.readFileSync(userMdPath, 'utf8');
+        console.log(chalk.cyan('  Backed up user.md'));
+      }
+
+      // Reset any local changes to tracked files (tools.md, soul.md will get updated)
+      await execAsync('git checkout -- memory/tools.md memory/soul.md', { cwd: projectDir }).catch(() => {});
 
       // Pull latest
       const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
       console.log(chalk.cyan('  git pull: ' + gitOut.trim()));
 
-      // Reapply stashed changes (merge them)
-      try {
-        await execAsync('git stash pop', { cwd: projectDir });
-        console.log(chalk.cyan('  git stash pop: Merged local changes'));
-      } catch (e) {
-        // Conflict occurred - merge both versions
-        const fs = await import('fs');
-        const toolsPath = path.join(projectDir, 'memory', 'tools.md');
-
-        // Keep both ours and theirs
-        await execAsync('git checkout --ours memory/tools.md', { cwd: projectDir }).catch(() => {});
-        const localContent = fs.readFileSync(toolsPath, 'utf8');
-
-        await execAsync('git checkout --theirs memory/tools.md', { cwd: projectDir }).catch(() => {});
-        const remoteContent = fs.readFileSync(toolsPath, 'utf8');
-
-        // Merge: remote content + any unique local content
-        const merged = remoteContent + (localContent.includes(remoteContent) ? '' : '\n\n' + localContent);
-        fs.writeFileSync(toolsPath, merged);
-
-        await execAsync('git add memory/tools.md', { cwd: projectDir });
-        await execAsync('git stash drop', { cwd: projectDir }).catch(() => {});
-        console.log(chalk.cyan('  Conflict resolved: Merged both versions'));
+      // Restore user.md from backup (preserve personalized content)
+      if (userMdBackup) {
+        fs.writeFileSync(userMdPath, userMdBackup);
+        console.log(chalk.cyan('  Restored user.md'));
       }
 
       // Run install script for system deps + npm
@@ -255,6 +248,180 @@ export async function startBot(config) {
     message += '_To manage tasks, just ask me (e.g. "disable the email summary task")_';
 
     await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  });
+
+  // Helper to format age from a date
+  const formatAge = (date) => {
+    const now = new Date();
+    const diff = now - new Date(date);
+    const mins = Math.floor(diff / 60000);
+    const hours = Math.floor(mins / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) return `${days}d ${hours % 24}h ago`;
+    if (hours > 0) return `${hours}h ${mins % 60}m ago`;
+    if (mins > 0) return `${mins}m ago`;
+    return 'just now';
+  };
+
+  // Handle /claude command to manage Claude Code sessions
+  bot.onText(/\/claude(?:\s+(.*))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+
+    // Only allow verified users
+    const allowedPhones = config.telegram.allowedPhones || [];
+    if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to manage Claude Code sessions.');
+      return;
+    }
+
+    const subcommand = match[1]?.trim();
+    const sessions = getClaudeSessionsForChat(chatId);
+
+    // No subcommand - show status
+    if (!subcommand) {
+      if (sessions.length === 0) {
+        await bot.sendMessage(chatId,
+          '🤖 *Claude Code Sessions*\n\n' +
+          'No active sessions.\n\n' +
+          'To start a session, just ask me to do a coding task, e.g.:\n' +
+          '_"Use Claude to fix the login bug"_\n' +
+          '_"Have Claude add unit tests to the user module"_',
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
+      let message = '🤖 *Claude Code Sessions*\n\n';
+      for (const session of sessions) {
+        const status = {
+          running: '🟢 Running',
+          starting: '🟡 Starting',
+          waiting_input: '🟠 Waiting for input',
+          completed: '✅ Completed',
+          error: '❌ Error',
+          interrupted: '⚪ Interrupted',
+        }[session.status] || '⚪ Unknown';
+
+        const shortId = session.id.slice(0, 12);
+        const age = formatAge(new Date(session.startedAt));
+        const prompt = session.prompt?.slice(0, 50) || 'No prompt';
+
+        message += `*${shortId}...* ${status}\n`;
+        message += `    ${prompt}${session.prompt?.length > 50 ? '...' : ''}\n`;
+        message += `    Started: ${age}\n`;
+
+        if (session.pendingQuestion) {
+          message += `    ⚠️ Waiting: ${session.pendingQuestion.slice(0, 40)}...\n`;
+        }
+
+        if (session.totalCost > 0) {
+          message += `    Cost: $${session.totalCost.toFixed(4)}\n`;
+        }
+
+        message += '\n';
+      }
+
+      message += '_Commands:_\n';
+      message += '`/claude stop <id>` - Stop a session\n';
+      message += '`/claude details <id>` - Show full details';
+
+      await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    // Parse subcommands
+    const [action, ...args] = subcommand.split(/\s+/);
+    const targetId = args.join(' ');
+
+    if (action === 'stop' || action === 'kill') {
+      if (!targetId) {
+        await bot.sendMessage(chatId, '⚠️ Usage: `/claude stop <session-id>`', { parse_mode: 'Markdown' });
+        return;
+      }
+
+      // Find matching session (supports partial ID)
+      const session = sessions.find(s =>
+        s.id.startsWith(targetId) ||
+        s.id.includes(targetId)
+      );
+
+      if (!session) {
+        await bot.sendMessage(chatId, `❌ Session not found: ${targetId}`);
+        return;
+      }
+
+      // Kill the process if running
+      if (session.kill) {
+        session.kill();
+      }
+      removeClaudeSession(session.id);
+
+      await bot.sendMessage(chatId, `🛑 Stopped session \`${session.id.slice(0, 12)}...\``, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (action === 'details' || action === 'info') {
+      if (!targetId) {
+        await bot.sendMessage(chatId, '⚠️ Usage: `/claude details <session-id>`', { parse_mode: 'Markdown' });
+        return;
+      }
+
+      const session = sessions.find(s =>
+        s.id.startsWith(targetId) ||
+        s.id.includes(targetId)
+      );
+
+      if (!session) {
+        await bot.sendMessage(chatId, `❌ Session not found: ${targetId}`);
+        return;
+      }
+
+      let details = `🤖 *Session Details*\n\n`;
+      details += `*ID:* \`${session.id}\`\n`;
+      details += `*Status:* ${session.status}\n`;
+      details += `*Model:* ${session.model || 'sonnet'}\n`;
+      details += `*Working Dir:* \`${session.workingDir}\`\n`;
+      details += `*Started:* ${new Date(session.startedAt).toLocaleString()}\n`;
+      details += `*Last Activity:* ${new Date(session.lastActivity).toLocaleString()}\n`;
+      details += `*Cost:* $${session.totalCost?.toFixed(4) || '0.0000'}\n\n`;
+      details += `*Task:*\n${session.prompt}`;
+
+      if (session.pendingQuestion) {
+        details += `\n\n*⚠️ Waiting for:*\n${session.pendingQuestion}`;
+      }
+
+      if (session.result) {
+        details += `\n\n*Result:*\n${session.result}`;
+      }
+
+      await bot.sendMessage(chatId, details, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (action === 'clear') {
+      // Clear all completed/errored sessions
+      let cleared = 0;
+      for (const session of sessions) {
+        if (session.status === 'completed' || session.status === 'error' || session.status === 'interrupted') {
+          removeClaudeSession(session.id);
+          cleared++;
+        }
+      }
+
+      await bot.sendMessage(chatId, `🗑️ Cleared ${cleared} finished session${cleared !== 1 ? 's' : ''}.`);
+      return;
+    }
+
+    // Unknown subcommand
+    await bot.sendMessage(chatId,
+      '⚠️ Unknown command. Available:\n' +
+      '`/claude` - List sessions\n' +
+      '`/claude stop <id>` - Stop a session\n' +
+      '`/claude details <id>` - Show details\n' +
+      '`/claude clear` - Clear finished sessions',
+      { parse_mode: 'Markdown' }
+    );
   });
 
   // Handle contact sharing for phone verification
@@ -771,14 +938,32 @@ export async function startBot(config) {
             const { exec } = await import('child_process');
             const { promisify } = await import('util');
             const execAsync = promisify(exec);
-            const path = await import('path');
+            const pathMod = await import('path');
+            const fsMod = await import('fs');
             const { fileURLToPath } = await import('url');
-            const __dirname = path.dirname(fileURLToPath(import.meta.url));
-            const projectDir = path.join(__dirname, '..');
+            const __dirname = pathMod.dirname(fileURLToPath(import.meta.url));
+            const projectDir = pathMod.join(__dirname, '..');
+
+            // Backup user.md (personalized content)
+            const userMdPath = pathMod.join(projectDir, 'memory', 'user.md');
+            let userMdBackup = null;
+            if (fsMod.existsSync(userMdPath)) {
+              userMdBackup = fsMod.readFileSync(userMdPath, 'utf8');
+              console.log(chalk.gray('  Backed up user.md'));
+            }
+
+            // Reset memory files to allow clean pull (tools.md and soul.md come from remote)
+            await execAsync('git checkout -- memory/tools.md memory/soul.md', { cwd: projectDir }).catch(() => {});
 
             console.log(chalk.gray('  Pulling latest changes...'));
             const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
             console.log(chalk.gray('  ' + gitOut.trim()));
+
+            // Restore user.md
+            if (userMdBackup) {
+              fsMod.writeFileSync(userMdPath, userMdBackup);
+              console.log(chalk.gray('  Restored user.md'));
+            }
 
             console.log(chalk.gray('  Installing dependencies...'));
             await execAsync('./install.sh', { cwd: projectDir });

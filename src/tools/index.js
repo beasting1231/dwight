@@ -7,6 +7,7 @@ import { webTools, executeWebTool, isWebConfigured } from './web/index.js';
 import { imageTools, executeImageTool, isImageConfigured } from './image/index.js';
 import { calendarTools, executeCalendarTool, isCalendarConfigured } from './calendar/index.js';
 import { cronTools, executeCronTool, startScheduler, stopScheduler, getSchedulerStatus } from './cron/index.js';
+import { claudeTools, executeClaudeTool, initializeClaude, cleanupClaude, isClaudeAvailable } from './claude/index.js';
 
 /**
  * All available tools for the AI
@@ -21,6 +22,7 @@ export const allTools = [
   ...imageTools,
   ...calendarTools,
   ...cronTools,
+  ...claudeTools,
 ];
 
 /**
@@ -71,6 +73,11 @@ const toolExecutors = {
   cron_toggle: (params) => executeCronTool('cron_toggle', params),
   cron_delete: (params) => executeCronTool('cron_delete', params),
   cron_update: (params) => executeCronTool('cron_update', params),
+  claude_start: (params, ctx) => executeClaudeTool('claude_start', params, ctx),
+  claude_input: (params, ctx) => executeClaudeTool('claude_input', params, ctx),
+  claude_status: (params, ctx) => executeClaudeTool('claude_status', params, ctx),
+  claude_stop: (params, ctx) => executeClaudeTool('claude_stop', params, ctx),
+  claude_resume: (params, ctx) => executeClaudeTool('claude_resume', params, ctx),
 };
 
 // Current chat context for tools that need it
@@ -115,6 +122,7 @@ export async function initializeTools() {
     web: { success: isWebConfigured() },
     image: { success: isImageConfigured() },
     calendar: { success: isCalendarConfigured() },
+    claude: await initializeClaude(),
   };
   return results;
 }
@@ -125,6 +133,7 @@ export async function initializeTools() {
 export async function cleanupTools() {
   await cleanupEmail();
   stopScheduler();
+  await cleanupClaude();
 }
 
 // Re-export scheduler functions for bot.js

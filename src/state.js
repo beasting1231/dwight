@@ -259,6 +259,76 @@ export function getLastGeneratedImage(chatId) {
 const toolLog = [];
 const MAX_TOOL_LOG = 50;
 
+// Claude Code sessions (sessionId -> session object)
+const claudeSessions = new Map();
+
+/**
+ * Create a new Claude Code session
+ * @param {string|number} chatId - Chat that owns this session
+ * @param {Object} sessionData - Session data
+ */
+export function createClaudeSession(chatId, sessionData) {
+  const session = {
+    ...sessionData,
+    chatId,
+    startedAt: sessionData.startedAt || new Date().toISOString(),
+    lastActivity: sessionData.lastActivity || new Date().toISOString(),
+  };
+  claudeSessions.set(session.id, session);
+}
+
+/**
+ * Get a Claude session by ID
+ * @param {string} sessionId - Session ID
+ * @returns {Object|undefined}
+ */
+export function getClaudeSession(sessionId) {
+  return claudeSessions.get(sessionId);
+}
+
+/**
+ * Get all Claude sessions for a chat
+ * @param {string|number} chatId - Chat ID
+ * @returns {Array}
+ */
+export function getClaudeSessionsForChat(chatId) {
+  const sessions = [];
+  for (const session of claudeSessions.values()) {
+    if (session.chatId === chatId) {
+      sessions.push(session);
+    }
+  }
+  return sessions;
+}
+
+/**
+ * Get all Claude sessions
+ * @returns {Map}
+ */
+export function getAllClaudeSessions() {
+  return claudeSessions;
+}
+
+/**
+ * Update a Claude session
+ * @param {string} sessionId - Session ID
+ * @param {Object} updates - Fields to update
+ */
+export function updateClaudeSession(sessionId, updates) {
+  const session = claudeSessions.get(sessionId);
+  if (session) {
+    Object.assign(session, updates);
+  }
+}
+
+/**
+ * Remove a Claude session
+ * @param {string} sessionId - Session ID
+ */
+export function removeClaudeSession(sessionId) {
+  claudeSessions.delete(sessionId);
+}
+
 // Currently running tasks (for animated display)
 const runningTasks = new Map();
 
