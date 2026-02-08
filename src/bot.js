@@ -481,7 +481,7 @@ export async function startBot(config) {
       return;
     }
 
-    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nThis will:\n1. Auto-select "Sign in with Claude" option\n2. Give you a URL to open\n3. You send me back the code');
+    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nI\'ll capture the auth URL and send it to you.');
 
     // Use script command to capture TUI output to a file
     const logFile = path.join(os.tmpdir(), `claude-auth-${chatId}-${Date.now()}.log`);
@@ -503,21 +503,33 @@ export async function startBot(config) {
 
     let urlSent = false;
     let authComplete = false;
-    let menuSelected = false;
 
     // Helper to strip ANSI and extract URL
     const stripAnsi = (str) => str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
 
     const extractUrl = (text) => {
+      // Look for the OAuth URL - it spans multiple lines so we need to handle that
+      // The URL looks like: https://claude.ai/oauth/authorize?code=true&client_id=...
       const patterns = [
-        /(https:\/\/console\.anthropic\.com\/[^\s"'<>]+)/,
-        /(https:\/\/claude\.ai\/[^\s"'<>]+)/,
-        /(https:\/\/[^\s"'<>]*oauth[^\s"'<>]*)/i,
-        /(https:\/\/[^\s"'<>]*auth[^\s"'<>]*)/i,
+        // Main OAuth URL pattern - capture everything until whitespace or control chars
+        /(https:\/\/claude\.ai\/oauth\/authorize\?[^\s\x00-\x1F]+)/,
+        // Fallback patterns
+        /(https:\/\/console\.anthropic\.com\/[^\s"'<>\x00-\x1F]+)/,
+        /(https:\/\/claude\.ai\/[^\s"'<>\x00-\x1F]+)/,
+        /(https:\/\/[^\s"'<>\x00-\x1F]*oauth[^\s"'<>\x00-\x1F]*)/i,
       ];
       for (const pattern of patterns) {
         const match = text.match(pattern);
-        if (match) return match[1].replace(/[)\]}>.,]+$/, '');
+        if (match) {
+          let url = match[1];
+          // Clean up any trailing garbage
+          url = url.replace(/[)\]}>.,\s]+$/, '');
+          // Make sure URL has required OAuth params
+          if (url.includes('oauth') && url.includes('client_id')) {
+            return url;
+          }
+          return url;
+        }
       }
       return null;
     };
@@ -546,39 +558,6 @@ export async function startBot(config) {
         const lowerContent = cleanContent.toLowerCase();
 
         console.log(chalk.gray(`  [claudeauth] Log (${content.length}b): ${cleanContent.replace(/\s+/g, ' ').slice(-300)}`));
-
-        // Detect auth method menu and auto-select subscription/sign-in option
-        if (!menuSelected) {
-          // Look for menu indicators
-          const hasMenu = lowerContent.includes('api key') ||
-                         lowerContent.includes('sign in') ||
-                         lowerContent.includes('subscription') ||
-                         lowerContent.includes('select') ||
-                         lowerContent.includes('choose') ||
-                         lowerContent.includes('1)') ||
-                         lowerContent.includes('2)');
-
-          if (hasMenu) {
-            console.log(chalk.yellow('  [claudeauth] Menu detected, selecting sign-in option...'));
-            menuSelected = true;
-
-            // Try different selection methods
-            // Usually arrow down + enter, or just "2" for second option
-            setTimeout(() => {
-              // Try sending down arrow then enter (for arrow-key menus)
-              sendInput('\x1B[B'); // Down arrow
-              setTimeout(() => {
-                sendInput('\r'); // Enter
-              }, 300);
-            }, 500);
-
-            // Also try sending "2" in case it's a numbered menu
-            setTimeout(() => {
-              sendInput('2');
-              setTimeout(() => sendInput('\r'), 200);
-            }, 1500);
-          }
-        }
 
         // Look for URL
         if (!urlSent) {
