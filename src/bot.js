@@ -74,7 +74,11 @@ export async function startBot(config) {
     { command: 'clear', description: 'Clear conversation history' },
     { command: 'restart', description: 'Reload config and memory' },
     { command: 'update', description: 'Update to latest version' },
+    { command: 'stop', description: 'Stop the bot process' },
   ]);
+
+  // Track pending stop confirmations
+  const pendingStopConfirmations = new Set();
 
   // Handle /start command
   bot.onText(/\/start/, async (msg) => {
@@ -150,6 +154,43 @@ export async function startBot(config) {
       console.log(chalk.red('  Update failed: ' + error.message));
       bot.sendMessage(chatId, `❌ Update failed: ${error.message}`);
     }
+  });
+
+  // Handle /stop command to terminate the bot
+  bot.onText(/\/stop/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    // Only allow verified users
+    const allowedPhones = config.telegram.allowedPhones || [];
+    if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to stop the bot.');
+      return;
+    }
+
+    pendingStopConfirmations.add(chatId);
+    await bot.sendMessage(chatId, '⚠️ Are you sure you want to stop Dwight?\n\nReply "yes" to confirm.');
+
+    // Auto-clear confirmation after 30 seconds
+    setTimeout(() => {
+      pendingStopConfirmations.delete(chatId);
+    }, 30000);
+  });
+
+  // Handle stop confirmation
+  bot.onText(/^yes$/i, async (msg) => {
+    const chatId = msg.chat.id;
+
+    if (!pendingStopConfirmations.has(chatId)) {
+      return; // No pending confirmation, ignore
+    }
+
+    pendingStopConfirmations.delete(chatId);
+    await bot.sendMessage(chatId, '👋 Goodbye! Stopping Dwight...');
+
+    // Give time for message to send
+    setTimeout(() => {
+      process.exit(0);
+    }, 500);
   });
 
   // Handle contact sharing for phone verification
