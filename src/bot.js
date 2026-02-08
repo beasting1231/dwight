@@ -425,9 +425,6 @@ export async function startBot(config) {
     );
   });
 
-  // Track pending Claude auth sessions (chatId -> { process, stage })
-  const pendingClaudeAuth = new Map();
-
   // Handle /claudeauth command to authenticate Claude Code CLI
   bot.onText(/\/claudeauth/, async (msg) => {
     const chatId = msg.chat.id;
@@ -439,211 +436,61 @@ export async function startBot(config) {
       return;
     }
 
-    // Check if already in auth flow
-    if (pendingClaudeAuth.has(chatId)) {
-      await bot.sendMessage(chatId, '⚠️ Auth already in progress. Send the auth code, or /claudeauth cancel to abort.');
-      return;
-    }
-
-    // First check if claude is installed
-    const { spawn, exec } = await import('child_process');
+    const { exec } = await import('child_process');
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
 
+    // Check if claude is installed
     try {
       await execAsync('which claude');
     } catch {
       await bot.sendMessage(chatId,
-        '❌ Claude Code CLI is not installed.\n\n' +
+        '❌ *Claude Code CLI is not installed.*\n\n' +
         'Run `/update` first to install it, or manually:\n' +
-        '`npm install -g @anthropic-ai/claude-code`',
+        '```\nnpm install -g @anthropic-ai/claude-code\n```',
         { parse_mode: 'Markdown' }
       );
       return;
     }
 
-    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nWaiting for auth URL (this may take a few seconds on headless servers)...');
+    // Try a simple command to see if already authenticated
+    await bot.sendMessage(chatId, '🔍 Checking Claude Code CLI status...');
 
-    // Helper to strip ANSI escape codes
-    const stripAnsi = (str) => str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/\?2026[hl]/g, '');
-
-    let proc;
     try {
-      // Start claude setup-token (correct command for auth)
-      proc = spawn('claude', ['setup-token'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          BROWSER: '/bin/false',  // Force browser to fail
-          DISPLAY: '',            // No display
-          TERM: 'dumb',           // Simple terminal
-        },
-        detached: false,
-      });
-    } catch (spawnError) {
-      console.log(chalk.red('  [claudeauth] Spawn error: ' + spawnError.message));
-      await bot.sendMessage(chatId, `❌ Failed to start auth process: ${spawnError.message}`);
-      return;
-    }
+      const { stdout } = await execAsync('claude --version', { timeout: 10000 });
+      const version = stdout.trim();
 
-    if (!proc || !proc.pid) {
-      await bot.sendMessage(chatId, '❌ Failed to start auth process. Try running manually via SSH:\n`claude setup-token`', { parse_mode: 'Markdown' });
-      return;
-    }
-
-    console.log(chalk.cyan(`  [claudeauth] Started process with PID ${proc.pid}`));
-
-    let output = '';
-    let urlSent = false;
-
-    const handleOutput = async (data) => {
+      // Try to run a simple print command to test auth
       try {
-        const rawData = data.toString();
-        const cleanData = stripAnsi(rawData);
-        output += cleanData;
-
-        // Log for debugging
-        if (cleanData.trim()) {
-          console.log(chalk.gray('  [claudeauth] ' + cleanData.trim().slice(0, 200)));
-        }
-      } catch (err) {
-        console.log(chalk.red('  [claudeauth] Output handling error: ' + err.message));
-      }
-
-      // Look for URL in cleaned output (various patterns)
-      const urlPatterns = [
-        /https:\/\/console\.anthropic\.com[^\s\x00-\x1F]*/,
-        /https:\/\/claude\.ai[^\s\x00-\x1F]*/,
-        /https:\/\/[^\s\x00-\x1F]*auth[^\s\x00-\x1F]*/i,
-        /https:\/\/[^\s\x00-\x1F]*login[^\s\x00-\x1F]*/i,
-        /https:\/\/[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^\s\x00-\x1F]*/,
-      ];
-
-      if (!urlSent) {
-        for (const pattern of urlPatterns) {
-          const urlMatch = output.match(pattern);
-          if (urlMatch) {
-            urlSent = true;
-            let authUrl = urlMatch[0].trim();
-            // Clean up any trailing garbage
-            authUrl = authUrl.replace(/[)\]}>]+$/, '');
-
-            await bot.sendMessage(chatId,
-              '🔗 *Open this URL in your browser to authenticate:*\n\n' +
-              `${authUrl}\n\n` +
-              'After authenticating, copy the token/code you receive and send it here.',
-              { parse_mode: 'Markdown' }
-            );
-
-            // Store the process for later
-            pendingClaudeAuth.set(chatId, { process: proc, stage: 'waiting_code' });
-            break;
-          }
-        }
-      }
-
-      // Check for success messages
-      const successPatterns = ['successfully', 'authenticated', 'logged in', 'token saved', 'complete'];
-      const lowerOutput = output.toLowerCase();
-      if (successPatterns.some(p => lowerOutput.includes(p))) {
-        pendingClaudeAuth.delete(chatId);
-        await bot.sendMessage(chatId, '✅ Claude Code CLI authenticated successfully! You can now use Claude Code sessions.');
-      }
-    };
-
-    proc.stdout.on('data', (data) => handleOutput(data).catch(e => console.error('[claudeauth] stdout error:', e)));
-    proc.stderr.on('data', (data) => handleOutput(data).catch(e => console.error('[claudeauth] stderr error:', e)));
-
-    proc.on('close', (code) => {
-      try {
-        console.log(chalk.gray(`  [claudeauth] Process exited with code ${code}`));
-        console.log(chalk.gray(`  [claudeauth] Full output: ${output.slice(0, 500)}`));
-
-        if (pendingClaudeAuth.has(chatId)) {
-          pendingClaudeAuth.delete(chatId);
-          if (!urlSent) {
-            bot.sendMessage(chatId,
-              `❌ Could not get auth URL (exit code: ${code}).\n\n` +
-              `Try manually on your server:\n` +
-              '```\nssh your-server\nclaude setup-token\n```\n' +
-              'Then follow the prompts there.',
-              { parse_mode: 'Markdown' }
-            ).catch(e => console.error('[claudeauth] send error:', e));
-          }
-        }
-      } catch (e) {
-        console.error('[claudeauth] close handler error:', e);
-      }
-    });
-
-    proc.on('error', (error) => {
-      try {
-        console.log(chalk.red(`  [claudeauth] Error: ${error.message}`));
-        pendingClaudeAuth.delete(chatId);
-        bot.sendMessage(chatId, `❌ Auth error: ${error.message}`).catch(e => console.error('[claudeauth] send error:', e));
-      } catch (e) {
-        console.error('[claudeauth] error handler error:', e);
-      }
-    });
-
-    // Check if we got a URL after 15 seconds
-    setTimeout(() => {
-      if (pendingClaudeAuth.has(chatId) && !urlSent) {
-        bot.sendMessage(chatId,
-          '⏳ Still waiting for auth URL...\n\n' +
-          'If this takes too long, the server may already be authenticated, or you may need to authenticate manually:\n' +
-          '```\nssh your-server\nclaude setup-token\n```',
+        await execAsync('claude -p "say ok" --max-turns 1 2>&1', { timeout: 30000 });
+        await bot.sendMessage(chatId,
+          `✅ *Claude Code CLI is already authenticated!*\n\n` +
+          `Version: ${version}\n\n` +
+          'You can now use Claude Code sessions.',
           { parse_mode: 'Markdown' }
         );
+        return;
+      } catch (authTestError) {
+        // Not authenticated or error - provide manual instructions
+        console.log(chalk.yellow('  [claudeauth] Auth test failed: ' + authTestError.message));
       }
-    }, 15 * 1000);
-
-    // Timeout after 5 minutes
-    setTimeout(() => {
-      if (pendingClaudeAuth.has(chatId)) {
-        const auth = pendingClaudeAuth.get(chatId);
-        if (auth.process && !auth.process.killed) {
-          auth.process.kill();
-        }
-        pendingClaudeAuth.delete(chatId);
-        bot.sendMessage(chatId, '⏰ Auth timed out. Run /claudeauth again to retry.');
-      }
-    }, 5 * 60 * 1000);
-  });
-
-  // Handle auth code input (any message while auth is pending)
-  bot.on('message', async (msg) => {
-    if (msg.text?.startsWith('/')) return; // Skip commands
-
-    const chatId = msg.chat.id;
-    const auth = pendingClaudeAuth.get(chatId);
-
-    if (!auth || auth.stage !== 'waiting_code') return;
-
-    const code = msg.text?.trim();
-    if (!code) return;
-
-    // Check for cancel
-    if (code.toLowerCase() === 'cancel') {
-      if (auth.process && !auth.process.killed) {
-        auth.process.kill();
-      }
-      pendingClaudeAuth.delete(chatId);
-      await bot.sendMessage(chatId, '❌ Auth cancelled.');
-      return;
+    } catch (versionError) {
+      console.log(chalk.yellow('  [claudeauth] Version check failed: ' + versionError.message));
     }
 
-    await bot.sendMessage(chatId, '📤 Sending auth code to Claude...');
-
-    // Send the code to the process
-    try {
-      auth.process.stdin.write(code + '\n');
-      auth.stage = 'waiting_result';
-      pendingClaudeAuth.set(chatId, auth);
-    } catch (error) {
-      pendingClaudeAuth.delete(chatId);
-      await bot.sendMessage(chatId, `❌ Failed to send code: ${error.message}`);
-    }
+    // Provide manual authentication instructions
+    await bot.sendMessage(chatId,
+      '🔐 *Claude Code CLI needs authentication*\n\n' +
+      'The interactive auth doesn\'t work well remotely. Please authenticate manually:\n\n' +
+      '*Step 1:* SSH into your server\n' +
+      '```\nssh root@your-server\n```\n\n' +
+      '*Step 2:* Run the auth command\n' +
+      '```\nclaude setup-token\n```\n\n' +
+      '*Step 3:* Follow the prompts - it will give you a URL to open in your browser\n\n' +
+      '*Step 4:* After authenticating in your browser, paste the code back into the terminal\n\n' +
+      'Once done, Claude Code sessions will work!',
+      { parse_mode: 'Markdown' }
+    );
   });
 
   // Handle contact sharing for phone verification
