@@ -481,7 +481,7 @@ export async function startBot(config) {
       return;
     }
 
-    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nCapturing auth URL from terminal...');
+    await bot.sendMessage(chatId, '🔐 Starting Claude Code authentication...\n\nThis will:\n1. Auto-select "Sign in with Claude" option\n2. Give you a URL to open\n3. You send me back the code');
 
     // Use script command to capture TUI output to a file
     const logFile = path.join(os.tmpdir(), `claude-auth-${chatId}-${Date.now()}.log`);
@@ -490,19 +490,20 @@ export async function startBot(config) {
     // Create empty log file
     fs.writeFileSync(logFile, '');
 
-    // Spawn script command to capture output
+    // Spawn script command to capture output with stdin pipe
     const proc = spawn('script', ['-q', '-f', logFile, '-c', 'claude setup-token'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        TERM: 'xterm',
+        TERM: 'xterm-256color',
         COLUMNS: '120',
         LINES: '40',
       },
-      detached: true,
     });
 
     let urlSent = false;
     let authComplete = false;
+    let menuSelected = false;
 
     // Helper to strip ANSI and extract URL
     const stripAnsi = (str) => str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
@@ -521,6 +522,20 @@ export async function startBot(config) {
       return null;
     };
 
+    // Function to send input to the process
+    const sendInput = (text) => {
+      try {
+        if (proc.stdin && proc.stdin.writable) {
+          proc.stdin.write(text);
+          console.log(chalk.cyan(`  [claudeauth] Sent input: ${JSON.stringify(text)}`));
+          return true;
+        }
+      } catch (err) {
+        console.log(chalk.red(`  [claudeauth] Failed to send input: ${err.message}`));
+      }
+      return false;
+    };
+
     // Check log file periodically for URL
     const checkInterval = setInterval(async () => {
       try {
@@ -528,8 +543,42 @@ export async function startBot(config) {
 
         const content = fs.readFileSync(logFile, 'utf-8');
         const cleanContent = stripAnsi(content);
+        const lowerContent = cleanContent.toLowerCase();
 
-        console.log(chalk.gray(`  [claudeauth] Log content (${content.length} bytes): ${cleanContent.slice(-200)}`));
+        console.log(chalk.gray(`  [claudeauth] Log (${content.length}b): ${cleanContent.replace(/\s+/g, ' ').slice(-300)}`));
+
+        // Detect auth method menu and auto-select subscription/sign-in option
+        if (!menuSelected) {
+          // Look for menu indicators
+          const hasMenu = lowerContent.includes('api key') ||
+                         lowerContent.includes('sign in') ||
+                         lowerContent.includes('subscription') ||
+                         lowerContent.includes('select') ||
+                         lowerContent.includes('choose') ||
+                         lowerContent.includes('1)') ||
+                         lowerContent.includes('2)');
+
+          if (hasMenu) {
+            console.log(chalk.yellow('  [claudeauth] Menu detected, selecting sign-in option...'));
+            menuSelected = true;
+
+            // Try different selection methods
+            // Usually arrow down + enter, or just "2" for second option
+            setTimeout(() => {
+              // Try sending down arrow then enter (for arrow-key menus)
+              sendInput('\x1B[B'); // Down arrow
+              setTimeout(() => {
+                sendInput('\r'); // Enter
+              }, 300);
+            }, 500);
+
+            // Also try sending "2" in case it's a numbered menu
+            setTimeout(() => {
+              sendInput('2');
+              setTimeout(() => sendInput('\r'), 200);
+            }, 1500);
+          }
+        }
 
         // Look for URL
         if (!urlSent) {
@@ -568,6 +617,7 @@ export async function startBot(config) {
       logFile,
       checkInterval,
       urlSent: () => urlSent,
+      sendInput,
     });
 
     proc.on('close', (code) => {
@@ -622,38 +672,11 @@ export async function startBot(config) {
 
     console.log(chalk.cyan(`  [claudeauth] Received token input: ${token.slice(0, 20)}...`));
 
-    // Write token to the process via the log file's stdin
-    // Actually we need to write to the process stdin
-    try {
-      const fs = await import('fs');
-      // The script command creates a typescript, we need to interact differently
-      // Let's try writing to /proc/PID/fd/0
-      const pid = auth.process.pid;
-      const stdinPath = `/proc/${pid}/fd/0`;
-
-      if (fs.existsSync(stdinPath)) {
-        fs.writeFileSync(stdinPath, token + '\n');
-        await bot.sendMessage(chatId, '📤 Sent token to Claude CLI...');
-      } else {
-        // Fallback: try to find child process
-        const { execSync } = await import('child_process');
-        try {
-          const children = execSync(`pgrep -P ${pid}`).toString().trim().split('\n');
-          for (const childPid of children) {
-            const childStdin = `/proc/${childPid}/fd/0`;
-            if (fs.existsSync(childStdin)) {
-              fs.writeFileSync(childStdin, token + '\n');
-              await bot.sendMessage(chatId, '📤 Sent token to Claude CLI...');
-              break;
-            }
-          }
-        } catch {
-          await bot.sendMessage(chatId, '⚠️ Could not send token automatically. The process may have finished or the token was already accepted.');
-        }
-      }
-    } catch (err) {
-      console.log(chalk.red(`  [claudeauth] Token send error: ${err.message}`));
-      await bot.sendMessage(chatId, `⚠️ Error sending token: ${err.message}`);
+    // Send token via stdin
+    if (auth.sendInput && auth.sendInput(token + '\r')) {
+      await bot.sendMessage(chatId, '📤 Sent token to Claude CLI... waiting for confirmation...');
+    } else {
+      await bot.sendMessage(chatId, '⚠️ Could not send token. Process may have closed. Try `/claudeauth` again.', { parse_mode: 'Markdown' });
     }
   });
 
