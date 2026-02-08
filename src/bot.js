@@ -140,13 +140,9 @@ export async function startBot(config) {
       // Stash local changes, pull, then merge them
       await bot.sendMessage(chatId, '📥 Pulling latest changes...');
 
-      // Stash any local changes
-      try {
-        await execAsync('git stash', { cwd: projectDir });
-        console.log(chalk.cyan('  git stash: Saved local changes'));
-      } catch (e) {
-        // No changes to stash, continue
-      }
+      // Stash any local changes (including untracked files)
+      await execAsync('git add -A && git stash push -u -m "Auto-stash before update"', { cwd: projectDir });
+      console.log(chalk.cyan('  git stash: Saved local changes'));
 
       // Pull latest
       const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
