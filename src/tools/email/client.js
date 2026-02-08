@@ -37,6 +37,11 @@ export function getImapConfig(provider, email, password) {
       pass: password,
     },
     logger: false,
+    tls: {
+      servername: base.host,
+    },
+    // Force IPv4 (fixes issues on VPS without IPv6)
+    family: 4,
   };
 }
 
@@ -72,6 +77,8 @@ export function getSmtpConfig(provider, email, password) {
       user: email,
       pass: password,
     },
+    // Force IPv4 (fixes issues on VPS without IPv6)
+    family: 4,
   };
 }
 
