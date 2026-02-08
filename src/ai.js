@@ -1,5 +1,5 @@
 import { conversations } from './state.js';
-import { allTools, executeTool, formatToolsForAI, setCurrentChatId } from './tools/index.js';
+import { allTools, executeTool, formatToolsForAI, setCurrentChatId, getTool } from './tools/index.js';
 import { loadConfig } from './config.js';
 import { logToolCall } from './ui.js';
 import { buildSystemPromptWithMemory } from './tools/memory/index.js';
@@ -10,6 +10,89 @@ import { buildSystemPromptWithMemory } from './tools/memory/index.js';
 function areToolsEnabled() {
   const config = loadConfig();
   return config?.email?.enabled === true;
+}
+
+/**
+ * Parse text-based tool calls from model output
+ * Handles formats like:
+ *   ```tool_code
+ *   bash_run(command='mkdir ~/projects')
+ *   ```
+ * or just:
+ *   tool_code
+ *   bash_run(command='...')
+ *
+ * @param {string} content - The text content from the model
+ * @returns {Array} Array of { name, params } objects, empty if none found
+ */
+function parseTextToolCalls(content) {
+  if (!content || typeof content !== 'string') return [];
+
+  const toolCalls = [];
+  let remaining = content;
+
+  // First, extract fenced code blocks: ```tool_code\nfunc(...)\n```
+  const fencedPattern = /```tool_code\s*\n([a-z_]+)\(([^)]*)\)\s*```/gi;
+  let match;
+  while ((match = fencedPattern.exec(content)) !== null) {
+    const toolName = match[1];
+    const argsString = match[2];
+
+    // Verify this is a real tool
+    if (!getTool(toolName)) continue;
+
+    // Parse the arguments
+    const params = parseToolArgs(argsString);
+    toolCalls.push({ name: toolName, params });
+
+    // Remove this match from remaining content
+    remaining = remaining.replace(match[0], '');
+  }
+
+  // Then check for plain text: tool_code\nfunc(...)
+  const plainPattern = /tool_code\s*\n([a-z_]+)\(([^)]*)\)/gi;
+  while ((match = plainPattern.exec(remaining)) !== null) {
+    const toolName = match[1];
+    const argsString = match[2];
+
+    // Verify this is a real tool
+    if (!getTool(toolName)) continue;
+
+    // Parse the arguments
+    const params = parseToolArgs(argsString);
+    toolCalls.push({ name: toolName, params });
+  }
+
+  return toolCalls;
+}
+
+/**
+ * Parse tool arguments from string format: key='value', key2='value2'
+ */
+function parseToolArgs(argsString) {
+  const params = {};
+  const argPattern = /(\w+)\s*=\s*['"]([^'"]*)['"]/g;
+  let argMatch;
+  while ((argMatch = argPattern.exec(argsString)) !== null) {
+    params[argMatch[1]] = argMatch[2];
+  }
+  return params;
+}
+
+/**
+ * Remove text-based tool call blocks from content
+ * @param {string} content - The text content
+ * @returns {string} Content with tool blocks removed
+ */
+function stripTextToolCalls(content) {
+  if (!content || typeof content !== 'string') return content;
+
+  return content
+    // Remove markdown fenced tool_code blocks
+    .replace(/```tool_code\s*\n[a-z_]+\([^)]*\)\s*```/gi, '')
+    // Remove plain tool_code blocks
+    .replace(/tool_code\s*\n[a-z_]+\([^)]*\)/gi, '')
+    .trim();
 }
 
 /**
@@ -136,7 +219,7 @@ async function processOpenRouterResponse(config, response, history) {
   const choice = response.choices[0];
   const message = choice.message;
 
-  // Check for tool calls
+  // Check for native tool calls first
   if (message.tool_calls && message.tool_calls.length > 0) {
     // Add assistant message with tool calls to history
     history.push({
@@ -155,6 +238,45 @@ async function processOpenRouterResponse(config, response, history) {
       history.push({
         role: 'tool',
         tool_call_id: toolCall.id,
+        content: JSON.stringify(result),
+      });
+    }
+
+    // Call API again to get final response
+    const followUp = await callOpenRouterAPI(config, history, true);
+    return processOpenRouterResponse(config, followUp, history);
+  }
+
+  // Check for text-based tool calls (Gemini often outputs these instead)
+  const textToolCalls = parseTextToolCalls(message.content);
+  if (textToolCalls.length > 0) {
+    // Strip the tool call text from the message for history
+    const cleanContent = stripTextToolCalls(message.content);
+
+    // Build fake tool_calls array for history compatibility
+    const fakeToolCalls = textToolCalls.map((tc, i) => ({
+      id: `text_tool_${Date.now()}_${i}`,
+      type: 'function',
+      function: { name: tc.name, arguments: JSON.stringify(tc.params) },
+    }));
+
+    // Add assistant message to history
+    history.push({
+      role: 'assistant',
+      content: cleanContent,
+      tool_calls: fakeToolCalls,
+    });
+
+    // Execute tools and add results
+    for (let i = 0; i < textToolCalls.length; i++) {
+      const tc = textToolCalls[i];
+      logToolCall(tc.name, 'running', tc.params);
+      const result = await executeTool(tc.name, tc.params);
+      logToolCall(tc.name, result.error ? 'error' : 'success', tc.params);
+
+      history.push({
+        role: 'tool',
+        tool_call_id: fakeToolCalls[i].id,
         content: JSON.stringify(result),
       });
     }
