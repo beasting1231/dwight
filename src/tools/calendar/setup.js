@@ -5,13 +5,9 @@
 
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import http from 'http';
-import { exec } from 'child_process';
 import { loadConfig, saveConfig } from '../../config.js';
 import { getAuthorizationUrl, exchangeCodeForTokens, saveCalendarTokens } from './oauth.js';
 import { listEvents } from './client.js';
-
-const OAUTH_PORT = 8085;
 
 /**
  * Interactive calendar setup
@@ -127,18 +123,41 @@ export async function setupCalendar() {
   console.log('');
   console.log(chalk.white.bold('  Step 2: Authorize access'));
   console.log('');
-  console.log(chalk.gray('  Opening browser for authorization...'));
-  console.log(chalk.gray('  If it doesn\'t open, visit this URL:'));
+  console.log(chalk.gray('  Open this URL in your browser:'));
   console.log('');
   console.log(chalk.cyan('  ' + authUrl));
   console.log('');
+  console.log(chalk.gray('  After authorizing, you\'ll be redirected to a page that may not load.'));
+  console.log(chalk.gray('  Copy the ENTIRE URL from your browser\'s address bar and paste it below.'));
+  console.log(chalk.gray('  (It will look like: http://localhost:8085/oauth/callback?code=...)'));
+  console.log('');
 
-  // Start local server to capture OAuth callback
+  // Ask user to paste the redirect URL or code
+  const { authInput } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'authInput',
+      message: chalk.cyan('Paste the redirect URL or code:'),
+      validate: input => {
+        if (!input || !input.trim()) {
+          return 'Please paste the redirect URL or authorization code';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  // Extract code from URL or use directly
   let authCode;
-  try {
-    authCode = await captureOAuthCallback(authUrl);
-  } catch (error) {
-    console.log(chalk.red('  ✗ ' + error.message));
+  if (authInput.includes('code=')) {
+    const url = new URL(authInput.replace('#', '?')); // Handle hash fragments
+    authCode = url.searchParams.get('code');
+  } else {
+    authCode = authInput.trim();
+  }
+
+  if (!authCode) {
+    console.log(chalk.red('  ✗ Could not extract authorization code'));
     return false;
   }
 
@@ -215,77 +234,3 @@ async function testConnection() {
   }
 }
 
-/**
- * Start local server and capture OAuth callback
- * @param {string} authUrl - Authorization URL to open
- * @returns {Promise<string>} - Authorization code
- */
-async function captureOAuthCallback(authUrl) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      const url = new URL(req.url, `http://localhost:${OAUTH_PORT}`);
-
-      if (url.pathname === '/oauth/callback') {
-        const code = url.searchParams.get('code');
-        const error = url.searchParams.get('error');
-
-        if (error) {
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end(`
-            <html>
-              <body style="font-family: system-ui; padding: 40px; text-align: center;">
-                <h1>❌ Authorization Failed</h1>
-                <p>Error: ${error}</p>
-                <p>You can close this window.</p>
-              </body>
-            </html>
-          `);
-          server.close();
-          reject(new Error(`Authorization denied: ${error}`));
-          return;
-        }
-
-        if (code) {
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end(`
-            <html>
-              <body style="font-family: system-ui; padding: 40px; text-align: center;">
-                <h1>✅ Authorization Successful!</h1>
-                <p>You can close this window and return to the terminal.</p>
-              </body>
-            </html>
-          `);
-          server.close();
-          resolve(code);
-          return;
-        }
-      }
-
-      res.writeHead(404);
-      res.end('Not found');
-    });
-
-    server.listen(OAUTH_PORT, () => {
-      console.log(chalk.gray(`  Waiting for authorization on port ${OAUTH_PORT}...`));
-
-      // Try to open browser
-      const openCommand = process.platform === 'darwin' ? 'open' :
-                         process.platform === 'win32' ? 'start' : 'xdg-open';
-      exec(`${openCommand} "${authUrl}"`);
-    });
-
-    server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        reject(new Error(`Port ${OAUTH_PORT} is already in use. Please close any other applications using it.`));
-      } else {
-        reject(err);
-      }
-    });
-
-    // Timeout after 5 minutes
-    setTimeout(() => {
-      server.close();
-      reject(new Error('Authorization timed out. Please try again.'));
-    }, 5 * 60 * 1000);
-  });
-}
