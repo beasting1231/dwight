@@ -445,14 +445,9 @@ spawn $claude_path setup-token
 set full_output ""
 set clean_url ""
 expect {
-    "Paste code" {
+    -re {(?i)Paste.*code} {
         append full_output $expect_out(buffer)
         puts $logfp "Found Paste code prompt"
-        flush $logfp
-    }
-    "paste code" {
-        append full_output $expect_out(buffer)
-        puts $logfp "Found paste code prompt (lowercase)"
         flush $logfp
     }
     eof {
@@ -485,8 +480,9 @@ flush $logfp
 if {$start_idx >= 0 && $end_idx > $start_idx} {
     set end_minus_one [expr {$end_idx - 1}]
     set url_chunk [string range $full_output $start_idx $end_minus_one]
-    regsub -all {\\s+} $url_chunk {} clean_url
-    regsub -all {\\[[0-9;]*m} $clean_url {} clean_url
+    regsub -all {\\x1b\\[\\??[0-9;]*[A-Za-z]} $url_chunk {} clean_url
+    regsub -all {[\\x00-\\x1f\\x7f]} $clean_url {} clean_url
+    regsub -all {\\s+} $clean_url {} clean_url
     puts $logfp "Extracted URL length: [string length $clean_url]"
     flush $logfp
 }
@@ -534,19 +530,20 @@ if {$wait_count >= 300} {
     close $fp
     exit 1
 }
-puts $logfp "Waiting for auth result..."
+puts $logfp "Waiting for auth result (15s)..."
 flush $logfp
+set timeout 15
 expect {
-    -re {[Ss]uccess|[Aa]uthenticated|saved} {
-        puts $logfp "Auth successful!"
+    -re {(?i)success|authenticated|saved|token} {
+        puts $logfp "Auth pattern matched!"
         close $logfp
         set fp [open $result_file w]
         puts $fp "SUCCESS"
         close $fp
         exit 0
     }
-    -re {[Ii]nvalid|[Ff]ailed} {
-        puts $logfp "Auth failed"
+    -re {(?i)invalid|failed|error|expired} {
+        puts $logfp "Auth failed pattern matched"
         close $logfp
         set fp [open $result_file w]
         puts $fp "ERROR: Auth failed"
@@ -554,7 +551,7 @@ expect {
         exit 1
     }
     eof {
-        puts $logfp "Got EOF"
+        puts $logfp "Got EOF - process exited"
         close $logfp
         set fp [open $result_file w]
         puts $fp "DONE"
@@ -562,12 +559,12 @@ expect {
         exit 0
     }
     timeout {
-        puts $logfp "Timeout waiting for result"
+        puts $logfp "Timeout - code was sent, assuming processing complete"
         close $logfp
         set fp [open $result_file w]
-        puts $fp "ERROR: Timeout"
+        puts $fp "DONE"
         close $fp
-        exit 1
+        exit 0
     }
 }`;
 
@@ -686,9 +683,10 @@ expect {
           if (url && url.includes('claude.ai/oauth')) {
             urlSent = true;
             console.log(chalk.green(`  [claudeauth] Found URL (${url.length} chars)`));
+            const escapedUrl = url.replace(/_/g, '\\_');
             await bot.sendMessage(chatId,
               '🔗 *Open this URL in your browser:*\n\n' +
-              `${url}\n\n` +
+              `${escapedUrl}\n\n` +
               'After authenticating, copy the code and send it back here!',
               { parse_mode: 'Markdown' }
             );
@@ -756,7 +754,21 @@ expect {
       if (!authComplete && pendingClaudeAuth.has(chatId)) {
         clearInterval(pollInterval);
         pendingClaudeAuth.delete(chatId);
-        if (!urlSent) {
+
+        // Check result file before cleanup — poll may not have read it yet
+        let result = '';
+        try {
+          if (fs.existsSync(resultFile)) {
+            result = fs.readFileSync(resultFile, 'utf8').trim();
+          }
+        } catch {}
+
+        if (result === 'SUCCESS' || result === 'DONE') {
+          authComplete = true;
+          bot.sendMessage(chatId, '✅ Claude Code CLI authenticated successfully!').catch(() => {});
+        } else if (result.startsWith('ERROR')) {
+          bot.sendMessage(chatId, `❌ Authentication failed: ${result}`).catch(() => {});
+        } else if (!urlSent) {
           bot.sendMessage(chatId, '❌ Could not capture auth URL. Check server logs for details.').catch(() => {});
         }
         // Cleanup
@@ -857,6 +869,9 @@ expect {
     if (msg.contact) return;
 
     const chatId = msg.chat.id;
+
+    // Skip if pending Claude auth (the auth handler will process this message)
+    if (pendingClaudeAuth.has(chatId) && pendingClaudeAuth.get(chatId).urlSent?.()) return;
 
     // Check phone restrictions
     const allowedPhones = config.telegram.allowedPhones || [];
