@@ -32,6 +32,11 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         npm install -g @anthropic-ai/claude-code
     fi
 
+    if ! command -v expect &> /dev/null; then
+        echo "Installing expect..."
+        brew install expect
+    fi
+
 elif [[ -f /etc/debian_version ]]; then
     # Ubuntu/Debian
     if ! command -v node &> /dev/null; then
@@ -55,10 +60,16 @@ elif [[ -f /etc/debian_version ]]; then
         npm install -g @anthropic-ai/claude-code
     fi
 
+    if ! command -v expect &> /dev/null; then
+        echo "Installing expect..."
+        sudo apt install -y expect
+    fi
+
 else
     echo "Unsupported OS. Please install manually:"
     echo "  - Node.js 18+"
     echo "  - ffmpeg"
+    echo "  - expect"
     echo "  - openai-whisper (pip3 install openai-whisper)"
     echo "  - Claude Code CLI (npm install -g @anthropic-ai/claude-code)"
     exit 1
