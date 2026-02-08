@@ -27,6 +27,11 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         pip3 install openai-whisper
     fi
 
+    if ! command -v claude &> /dev/null; then
+        echo "Installing Claude Code CLI..."
+        npm install -g @anthropic-ai/claude-code
+    fi
+
 elif [[ -f /etc/debian_version ]]; then
     # Ubuntu/Debian
     if ! command -v node &> /dev/null; then
@@ -45,11 +50,17 @@ elif [[ -f /etc/debian_version ]]; then
         pip3 install openai-whisper --break-system-packages
     fi
 
+    if ! command -v claude &> /dev/null; then
+        echo "Installing Claude Code CLI..."
+        npm install -g @anthropic-ai/claude-code
+    fi
+
 else
     echo "Unsupported OS. Please install manually:"
     echo "  - Node.js 18+"
     echo "  - ffmpeg"
     echo "  - openai-whisper (pip3 install openai-whisper)"
+    echo "  - Claude Code CLI (npm install -g @anthropic-ai/claude-code)"
     exit 1
 fi
 
