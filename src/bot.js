@@ -43,6 +43,7 @@ import {
 } from './cli.js';
 import { initializeTools, cleanupTools, startScheduler, stopScheduler, getSchedulerStatus } from './tools/index.js';
 import { formatPattern } from './tools/cron/patterns.js';
+import { loadCrons } from './tools/cron/storage.js';
 import { needsOnboarding, processOnboarding } from './chatOnboarding.js';
 
 export async function startBot(config) {
@@ -74,6 +75,7 @@ export async function startBot(config) {
     { command: 'clear', description: 'Clear conversation history' },
     { command: 'restart', description: 'Reload config and memory' },
     { command: 'update', description: 'Update to latest version' },
+    { command: 'cron', description: 'List scheduled tasks' },
     { command: 'stop', description: 'Stop the bot process' },
   ]);
 
@@ -191,6 +193,37 @@ export async function startBot(config) {
     setTimeout(() => {
       process.exit(0);
     }, 500);
+  });
+
+  // Handle /cron command to list scheduled tasks
+  bot.onText(/\/cron/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    const crons = loadCrons();
+
+    if (crons.length === 0) {
+      await bot.sendMessage(chatId,
+        '📅 *No scheduled tasks*\n\n' +
+        'To create one, just tell me, e.g.:\n' +
+        '_"Every Monday at 9am, send me a summary email"_',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    let message = '📅 *Scheduled Tasks*\n\n';
+
+    for (const cron of crons) {
+      const status = cron.enabled ? '🟢' : '⚪';
+      const nextRun = cron.nextRun ? new Date(cron.nextRun).toLocaleString() : 'N/A';
+      message += `${status} *${cron.description}*\n`;
+      message += `    _${formatPattern(cron.pattern)}_\n`;
+      message += `    Next: ${nextRun}\n\n`;
+    }
+
+    message += '_To manage tasks, just ask me (e.g. "disable the email summary task")_';
+
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   });
 
   // Handle contact sharing for phone verification
