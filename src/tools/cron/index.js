@@ -19,7 +19,11 @@ export const cronTools = [
     name: 'cron_create',
     description: `Create a scheduled task (cron job) that will execute at specified times.
 
-IMPORTANT: For ONE-TIME reminders (e.g., "in 5 minutes", "tomorrow at 3pm", "next Tuesday"),
+CRITICAL DISTINCTION - Read this carefully:
+• "IN X minutes/hours" = ONE-TIME = type: "once" (e.g., "remind me IN 5 minutes")
+• "EVERY X minutes/hours" = RECURRING = type: "interval" (e.g., "EVERY 5 minutes")
+
+IMPORTANT: For ONE-TIME reminders (e.g., "in 5 minutes", "in 1 minute", "tomorrow at 3pm", "next Tuesday"),
 ALWAYS use type: "once" with a specific datetime. The task auto-deletes after running.
 
 For RECURRING tasks (e.g., "every day", "every Monday", "every 2 hours"), use other types.
@@ -31,12 +35,18 @@ Pattern types:
 - monthly: Run on a specific day of the month (RECURRING)
 - interval: Run every N hours or minutes (RECURRING - NOT for one-time reminders!)
 
-Examples:
-- "Remind me in 5 minutes" → { type: "once", datetime: "<current time + 5 minutes in ISO format>" }
+Correct examples:
+- "Remind me in 5 minutes" → { type: "once", datetime: "2026-02-08T22:37:00Z" }
+- "Remind me in 1 minute" → { type: "once", datetime: "2026-02-08T22:33:00Z" }
+- "In 30 minutes, check email" → { type: "once", datetime: "2026-02-08T23:02:00Z" }
 - "Remind me tomorrow at 8am" → { type: "once", datetime: "2026-02-09T08:00:00" }
 - "Every day at 9am" → { type: "daily", time: "09:00" }
 - "Every Monday and Friday at 2pm" → { type: "weekly", days: ["monday", "friday"], time: "14:00" }
-- "Every 4 hours" → { type: "interval", hours: 4 }`,
+- "Every 4 hours" → { type: "interval", hours: 4 }
+
+WRONG examples (DO NOT DO THIS):
+- "Remind me in 5 minutes" → { type: "interval", minutes: 5 } ❌ WRONG!
+- "In 1 minute" → { type: "interval", minutes: 1 } ❌ WRONG! Use type: "once"!`,
     parameters: {
       type: 'object',
       properties: {
