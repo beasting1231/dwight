@@ -430,43 +430,83 @@ export async function startBot(config) {
 
   // Expect script for claude auth (embedded to avoid file system issues)
   const CLAUDE_AUTH_EXPECT = `#!/usr/bin/expect -f
-set timeout 300
+set timeout 60
 set url_file [lindex $argv 0]
 set code_file [lindex $argv 1]
 set result_file [lindex $argv 2]
+set log_file [lindex $argv 3]
 catch {exec rm -f $url_file $result_file}
 log_user 0
+set logfp [open $log_file w]
+puts $logfp "Starting claude setup-token..."
+flush $logfp
 spawn claude setup-token
 set full_output ""
 set clean_url ""
 expect {
-    "Paste code" { append full_output $expect_out(buffer) }
+    "Paste code" {
+        append full_output $expect_out(buffer)
+        puts $logfp "Found Paste code prompt"
+        flush $logfp
+    }
+    "paste code" {
+        append full_output $expect_out(buffer)
+        puts $logfp "Found paste code prompt (lowercase)"
+        flush $logfp
+    }
+    eof {
+        puts $logfp "Got EOF before Paste code"
+        puts $logfp "Buffer: [string range $expect_out(buffer) 0 500]"
+        flush $logfp
+        set fp [open $result_file w]
+        puts $fp "ERROR: Process ended before showing URL"
+        close $fp
+        close $logfp
+        exit 1
+    }
     timeout {
+        puts $logfp "Timeout waiting for Paste code"
+        puts $logfp "Buffer so far: [string range $expect_out(buffer) 0 500]"
+        flush $logfp
         set fp [open $result_file w]
         puts $fp "ERROR: Timeout waiting for paste prompt"
         close $fp
+        close $logfp
         exit 1
     }
 }
+puts $logfp "Output length: [string length $full_output]"
+flush $logfp
 set start_idx [string first "https://claude.ai/oauth" $full_output]
 set end_idx [string first "Paste" $full_output]
+puts $logfp "URL start: $start_idx, end: $end_idx"
+flush $logfp
 if {$start_idx >= 0 && $end_idx > $start_idx} {
     set end_minus_one [expr {$end_idx - 1}]
     set url_chunk [string range $full_output $start_idx $end_minus_one]
     regsub -all {\\s+} $url_chunk {} clean_url
     regsub -all {\\[[0-9;]*m} $clean_url {} clean_url
+    puts $logfp "Extracted URL length: [string length $clean_url]"
+    flush $logfp
 }
 if {[string length $clean_url] > 50} {
     set fp [open $url_file w]
     puts $fp $clean_url
     close $fp
+    puts $logfp "Wrote URL to file"
+    flush $logfp
 }
 if {![file exists $url_file]} {
+    puts $logfp "URL file not created, output was: [string range $full_output 0 1000]"
+    flush $logfp
     set fp [open $result_file w]
     puts $fp "ERROR: Could not extract URL"
     close $fp
+    close $logfp
     exit 1
 }
+puts $logfp "Waiting for code file..."
+flush $logfp
 set wait_count 0
 while {$wait_count < 300} {
     if {[file exists $code_file]} {
@@ -476,6 +516,8 @@ while {$wait_count < 300} {
         set code [string trim $code]
         if {[string length $code] > 5} {
             catch {exec rm -f $code_file}
+            puts $logfp "Sending code: [string range $code 0 20]..."
+            flush $logfp
             send "$code\\r"
             break
         }
@@ -484,31 +526,43 @@ while {$wait_count < 300} {
     incr wait_count
 }
 if {$wait_count >= 300} {
+    puts $logfp "Timeout waiting for code"
+    close $logfp
     set fp [open $result_file w]
     puts $fp "ERROR: Timeout waiting for code"
     close $fp
     exit 1
 }
+puts $logfp "Waiting for auth result..."
+flush $logfp
 expect {
     -re {[Ss]uccess|[Aa]uthenticated|saved} {
+        puts $logfp "Auth successful!"
+        close $logfp
         set fp [open $result_file w]
         puts $fp "SUCCESS"
         close $fp
         exit 0
     }
     -re {[Ii]nvalid|[Ff]ailed} {
+        puts $logfp "Auth failed"
+        close $logfp
         set fp [open $result_file w]
         puts $fp "ERROR: Auth failed"
         close $fp
         exit 1
     }
     eof {
+        puts $logfp "Got EOF"
+        close $logfp
         set fp [open $result_file w]
         puts $fp "DONE"
         close $fp
         exit 0
     }
     timeout {
+        puts $logfp "Timeout waiting for result"
+        close $logfp
         set fp [open $result_file w]
         puts $fp "ERROR: Timeout"
         close $fp
@@ -549,6 +603,7 @@ expect {
           fs.unlinkSync(auth.codeFile);
           fs.unlinkSync(auth.resultFile);
           fs.unlinkSync(auth.scriptFile);
+          fs.unlinkSync(auth.logFile);
         } catch {}
         pendingClaudeAuth.delete(chatId);
         await bot.sendMessage(chatId, '❌ Auth cancelled.');
@@ -597,15 +652,16 @@ expect {
     const urlFile = path.join(tmpDir, `claude-url-${timestamp}.txt`);
     const codeFile = path.join(tmpDir, `claude-code-${timestamp}.txt`);
     const resultFile = path.join(tmpDir, `claude-result-${timestamp}.txt`);
+    const logFile = path.join(tmpDir, `claude-auth-${timestamp}.log`);
 
     // Write expect script
     fs.writeFileSync(scriptFile, CLAUDE_AUTH_EXPECT);
     fs.chmodSync(scriptFile, '755');
 
-    console.log(chalk.cyan(`  [claudeauth] Starting expect script`));
+    console.log(chalk.cyan(`  [claudeauth] Starting expect script, log: ${logFile}`));
 
     // Run expect script
-    const expectProc = spawn('expect', [scriptFile, urlFile, codeFile, resultFile], {
+    const expectProc = spawn('expect', [scriptFile, urlFile, codeFile, resultFile, logFile], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -647,6 +703,7 @@ expect {
             fs.unlinkSync(codeFile);
             fs.unlinkSync(resultFile);
             fs.unlinkSync(scriptFile);
+            fs.unlinkSync(logFile);
           } catch {}
 
           if (result === 'SUCCESS' || result === 'DONE') {
@@ -670,11 +727,23 @@ expect {
       codeFile,
       resultFile,
       scriptFile,
+      logFile,
       urlSent: () => urlSent,
     });
 
     expectProc.on('close', (code) => {
       console.log(chalk.gray(`  [claudeauth] Expect process closed with code ${code}`));
+
+      // Read debug log
+      try {
+        if (fs.existsSync(logFile)) {
+          const debugLog = fs.readFileSync(logFile, 'utf8');
+          console.log(chalk.yellow(`  [claudeauth] Debug log:\n${debugLog}`));
+        }
+      } catch (e) {
+        console.log(chalk.gray(`  [claudeauth] Could not read debug log: ${e.message}`));
+      }
+
       if (!authComplete && pendingClaudeAuth.has(chatId)) {
         clearInterval(pollInterval);
         pendingClaudeAuth.delete(chatId);
@@ -687,6 +756,7 @@ expect {
           fs.unlinkSync(codeFile);
           fs.unlinkSync(resultFile);
           fs.unlinkSync(scriptFile);
+          fs.unlinkSync(logFile);
         } catch {}
       }
     });
@@ -707,6 +777,7 @@ expect {
           fs.unlinkSync(auth.codeFile);
           fs.unlinkSync(auth.resultFile);
           fs.unlinkSync(auth.scriptFile);
+          fs.unlinkSync(auth.logFile);
         } catch {}
         pendingClaudeAuth.delete(chatId);
         bot.sendMessage(chatId, '⏰ Auth timed out. Try `/claudeauth` again.', { parse_mode: 'Markdown' }).catch(() => {});
