@@ -701,6 +701,14 @@ export function buildSystemPromptWithMemory(basePrompt) {
   prompt += '3. If not found → ask user for the email address\n';
   prompt += 'NEVER say "I don\'t have an email" without calling contacts_lookup first.\n';
 
+  prompt += '\n\n---\n\n# CLAUDE CODE SESSION RULE\n\n';
+  prompt += 'When user wants to communicate with a Claude Code session:\n';
+  prompt += '- "ask claude to...", "tell it to...", "let it...", "have it..." → call claude_resume(prompt="...")\n';
+  prompt += '- claude_resume auto-selects the most recent session - NO session ID needed!\n';
+  prompt += '- NEVER say "I lost track of the session" - just call claude_resume\n';
+  prompt += '- NEVER ask user for session ID - the tool finds it automatically\n';
+  prompt += '- Only use claude_start for NEW sessions when no session exists\n';
+
   return prompt;
 }
 
