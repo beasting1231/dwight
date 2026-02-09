@@ -39,6 +39,10 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 
 elif [[ -f /etc/debian_version ]]; then
     # Ubuntu/Debian
+    # Build tools needed for node-pty native compilation
+    echo "Installing build tools for native modules..."
+    sudo apt install -y build-essential python3
+
     if ! command -v node &> /dev/null; then
         echo "Installing Node.js..."
         curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -

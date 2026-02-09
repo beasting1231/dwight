@@ -54,8 +54,8 @@ export async function startSession(params, ctx) {
   // Add to running tasks for UI display
   addRunningTask(sessionId, `Claude: ${truncate(prompt, 30)}`);
 
-  // Spawn the Claude process
-  const { process: proc, kill } = spawnClaudeSession({
+  // Spawn the Claude process (now async with PTY)
+  const { process: proc, kill, write } = await spawnClaudeSession({
     prompt,
     workingDir: cwd,
     model,
@@ -64,8 +64,8 @@ export async function startSession(params, ctx) {
     onClose: (code) => handleClaudeClose(code, sessionId, chatId),
   });
 
-  // Store process reference
-  updateClaudeSession(sessionId, { process: proc, kill, status: 'running' });
+  // Store process reference and write function for input
+  updateClaudeSession(sessionId, { process: proc, kill, write, status: 'running' });
   saveSessions(getAllClaudeSessions());
 
   return {
@@ -446,10 +446,10 @@ export async function resumeSession(params, ctx) {
     };
   }
 
-  // Spawn resumed session
+  // Spawn resumed session (now async with PTY)
   addRunningTask(session.id, `Claude: ${truncate(prompt, 30)}`);
 
-  const { process: proc, kill } = resumeClaudeSession({
+  const { process: proc, kill, write } = await resumeClaudeSession({
     sessionId: session.claudeSessionId,
     prompt,
     workingDir: session.workingDir,
@@ -461,6 +461,7 @@ export async function resumeSession(params, ctx) {
   updateClaudeSession(session.id, {
     process: proc,
     kill,
+    write,
     status: 'running',
     lastActivity: new Date().toISOString(),
   });
@@ -494,10 +495,9 @@ export async function sendSessionInput(params, ctx) {
     return { error: 'Session is not waiting for input' };
   }
 
-  // Note: In --print mode, stdin interaction is limited
-  // This may need enhancement based on Claude CLI capabilities
-  if (session.process && session.process.stdin && session.process.stdin.writable) {
-    session.process.stdin.write(input + '\n');
+  // With PTY, we have a reliable write function
+  if (session.write) {
+    session.write(input + '\n');
     updateClaudeSession(sessionId, {
       status: 'running',
       pendingQuestion: null,
@@ -511,8 +511,24 @@ export async function sendSessionInput(params, ctx) {
     };
   }
 
+  // Fallback for old stdin method (shouldn't happen with PTY)
+  if (session.process && session.process.stdin && session.process.stdin.writable) {
+    session.process.stdin.write(input + '\n');
+    updateClaudeSession(sessionId, {
+      status: 'running',
+      pendingQuestion: null,
+      pendingOptions: null,
+      lastActivity: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: 'Input sent to Claude (legacy)',
+    };
+  }
+
   return {
-    error: 'Cannot send input - session stdin not available',
+    error: 'Cannot send input - session not available',
   };
 }
 

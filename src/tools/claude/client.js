@@ -1,14 +1,24 @@
 /**
  * Claude Code CLI process management
- * Spawns and manages Claude Code CLI processes
+ * Uses PTY (pseudo-terminal) for proper interactive stdin/stdout
  */
 
-import { spawn } from 'child_process';
 import os from 'os';
 import { parseStreamData } from './parser.js';
 
+// Dynamic import for node-pty (native module)
+let pty = null;
+
+async function getPty() {
+  if (!pty) {
+    const module = await import('node-pty');
+    pty = module.default || module;
+  }
+  return pty;
+}
+
 /**
- * Spawn a new Claude Code CLI session
+ * Spawn a new Claude Code CLI session using PTY
  * @param {Object} options
  * @param {string} options.prompt - The task prompt for Claude
  * @param {string} options.workingDir - Working directory for the session
@@ -16,9 +26,9 @@ import { parseStreamData } from './parser.js';
  * @param {Function} options.onEvent - Callback for parsed stream events
  * @param {Function} options.onError - Callback for errors
  * @param {Function} options.onClose - Callback when process closes
- * @returns {Object} { process, kill }
+ * @returns {Object} { process, kill, write }
  */
-export function spawnClaudeSession(options) {
+export async function spawnClaudeSession(options) {
   const {
     prompt,
     workingDir = os.homedir(),
@@ -28,12 +38,14 @@ export function spawnClaudeSession(options) {
     onClose,
   } = options;
 
+  const nodePty = await getPty();
+
   // Build claude command arguments
   const args = [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--dangerously-skip-permissions',  // Required for non-interactive mode
+    '--dangerously-skip-permissions',
   ];
 
   // Add model if specified
@@ -44,18 +56,23 @@ export function spawnClaudeSession(options) {
   // Add the prompt
   args.push(prompt);
 
-  // Spawn the process
-  const proc = spawn('claude', args, {
+  // Spawn with PTY for proper terminal emulation
+  const proc = nodePty.spawn('claude', args, {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 30,
     cwd: workingDir,
     env: { ...process.env },
-    stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   let buffer = '';
 
-  // Parse stdout as newline-delimited JSON
-  proc.stdout.on('data', (data) => {
-    const { events, buffer: remaining } = parseStreamData(data.toString(), buffer);
+  // PTY combines stdout/stderr into single data stream
+  proc.onData((data) => {
+    // Filter out ANSI escape codes that aren't part of JSON
+    const cleaned = stripAnsiCodes(data);
+
+    const { events, buffer: remaining } = parseStreamData(cleaned, buffer);
     buffer = remaining;
 
     for (const event of events) {
@@ -63,55 +80,49 @@ export function spawnClaudeSession(options) {
     }
   });
 
-  // Capture stderr
-  proc.stderr.on('data', (data) => {
-    const text = data.toString().trim();
-    if (text && onError) {
-      onError(new Error(text));
-    }
-  });
-
-  // Handle process close
-  proc.on('close', (code) => {
-    if (onClose) onClose(code);
-  });
-
-  proc.on('error', (error) => {
-    if (onError) onError(error);
+  proc.onExit(({ exitCode }) => {
+    if (onClose) onClose(exitCode);
   });
 
   return {
     process: proc,
+    write: (input) => {
+      proc.write(input);
+    },
     kill: (signal = 'SIGTERM') => {
-      if (!proc.killed) {
-        proc.kill(signal);
-        // Force kill after 5 seconds if still running
-        setTimeout(() => {
-          if (!proc.killed) {
-            proc.kill('SIGKILL');
-          }
-        }, 5000);
+      try {
+        proc.kill(signal === 'SIGKILL' ? 9 : 15);
+      } catch (e) {
+        // Process may already be dead
       }
     },
   };
 }
 
 /**
+ * Strip ANSI escape codes from string
+ * PTY output may contain terminal formatting codes
+ */
+function stripAnsiCodes(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+            .replace(/\x1b\][^\x07]*\x07/g, '');
+}
+
+/**
  * Send input to a running Claude session
- * Note: In --print mode with stream-json, stdin may not be fully interactive.
- * For now, this is a placeholder for future enhancement.
- * @param {ChildProcess} proc - The Claude process
+ * With PTY, this actually works reliably!
+ * @param {Object} proc - The PTY process
  * @param {string} input - The input to send
  * @returns {boolean} Whether input was sent
  */
 export function sendInput(proc, input) {
-  if (!proc || !proc.stdin || !proc.stdin.writable) {
+  if (!proc || !proc.write) {
     return false;
   }
 
   try {
-    // In stream-json mode, input might need special formatting
-    proc.stdin.write(input + '\n');
+    proc.write(input + '\n');
     return true;
   } catch (error) {
     console.error('Failed to send input to Claude:', error.message);
@@ -120,7 +131,7 @@ export function sendInput(proc, input) {
 }
 
 /**
- * Resume a previous Claude Code session
+ * Resume a previous Claude Code session using PTY
  * @param {Object} options
  * @param {string} options.sessionId - The session ID to resume
  * @param {string} options.prompt - Optional new prompt to continue with
@@ -128,9 +139,9 @@ export function sendInput(proc, input) {
  * @param {Function} options.onEvent - Event callback
  * @param {Function} options.onError - Error callback
  * @param {Function} options.onClose - Close callback
- * @returns {Object} { process, kill }
+ * @returns {Object} { process, kill, write }
  */
-export function resumeClaudeSession(options) {
+export async function resumeClaudeSession(options) {
   const {
     sessionId,
     prompt = '',
@@ -139,6 +150,8 @@ export function resumeClaudeSession(options) {
     onError,
     onClose,
   } = options;
+
+  const nodePty = await getPty();
 
   const args = [
     '--print',
@@ -153,16 +166,19 @@ export function resumeClaudeSession(options) {
     args.push(prompt);
   }
 
-  const proc = spawn('claude', args, {
+  const proc = nodePty.spawn('claude', args, {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 30,
     cwd: workingDir,
     env: { ...process.env },
-    stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   let buffer = '';
 
-  proc.stdout.on('data', (data) => {
-    const { events, buffer: remaining } = parseStreamData(data.toString(), buffer);
+  proc.onData((data) => {
+    const cleaned = stripAnsiCodes(data);
+    const { events, buffer: remaining } = parseStreamData(cleaned, buffer);
     buffer = remaining;
 
     for (const event of events) {
@@ -170,31 +186,20 @@ export function resumeClaudeSession(options) {
     }
   });
 
-  proc.stderr.on('data', (data) => {
-    const text = data.toString().trim();
-    if (text && onError) {
-      onError(new Error(text));
-    }
-  });
-
-  proc.on('close', (code) => {
-    if (onClose) onClose(code);
-  });
-
-  proc.on('error', (error) => {
-    if (onError) onError(error);
+  proc.onExit(({ exitCode }) => {
+    if (onClose) onClose(exitCode);
   });
 
   return {
     process: proc,
+    write: (input) => {
+      proc.write(input);
+    },
     kill: (signal = 'SIGTERM') => {
-      if (!proc.killed) {
-        proc.kill(signal);
-        setTimeout(() => {
-          if (!proc.killed) {
-            proc.kill('SIGKILL');
-          }
-        }, 5000);
+      try {
+        proc.kill(signal === 'SIGKILL' ? 9 : 15);
+      } catch (e) {
+        // Process may already be dead
       }
     },
   };
