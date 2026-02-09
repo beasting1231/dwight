@@ -10,10 +10,11 @@ CLAUDE CODE CLI PROTOCOL: You have access to Claude Code CLI for complex coding 
 - claude_input: Send input to a session waiting for user response
 
 CRITICAL - SESSION MANAGEMENT:
-- If user already has a Claude session running or completed, use claude_resume to continue it
-- ONLY use claude_start for brand new coding tasks with no existing session
-- When user says "ask claude to...", "tell it to...", "have it do..." - use claude_resume on the existing session
-- Think of claude_resume as sending a chat message to Claude Code
+- When user wants to send a message to Claude (e.g., "ask it to...", "tell claude to...", "let it..."), ALWAYS call claude_resume
+- claude_resume does NOT require a session ID - it auto-selects the most recent session!
+- NEVER say "I lost track of the session ID" - just call claude_resume(prompt="...") without sessionId
+- ONLY use claude_start for brand new sessions when explicitly requested
+- DO NOT ask user for session ID - the tool finds it automatically
 
 MONITORING SESSIONS: When user asks about Claude's progress (e.g., "how is claude doing?", "is it stalled?"):
 1. ALWAYS call claude_status first to get the actual activity log
