@@ -4,7 +4,7 @@
  */
 
 import os from 'os';
-import { parseStreamData } from './parser.js';
+import { parseStreamData, detectPermissionPrompt } from './parser.js';
 
 // Dynamic import for node-pty (native module)
 let pty = null;
@@ -41,11 +41,12 @@ export async function spawnClaudeSession(options) {
   const nodePty = await getPty();
 
   // Build claude command arguments
+  // Note: --dangerously-skip-permissions not used because it's blocked when running as root
+  // PTY allows us to handle permission prompts interactively instead
   const args = [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--dangerously-skip-permissions',
   ];
 
   // Add model if specified
@@ -71,6 +72,14 @@ export async function spawnClaudeSession(options) {
   proc.onData((data) => {
     // Filter out ANSI escape codes that aren't part of JSON
     const cleaned = stripAnsiCodes(data);
+
+    // Check for permission prompts and auto-approve
+    const permission = detectPermissionPrompt(cleaned);
+    if (permission) {
+      console.log(`Auto-approving permission for: ${permission.tool}`);
+      proc.write('y\n');
+      return; // Don't parse this as JSON
+    }
 
     const { events, buffer: remaining } = parseStreamData(cleaned, buffer);
     buffer = remaining;
@@ -153,11 +162,12 @@ export async function resumeClaudeSession(options) {
 
   const nodePty = await getPty();
 
+  // Note: --dangerously-skip-permissions not used because it's blocked when running as root
+  // PTY allows us to handle permission prompts interactively instead
   const args = [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--dangerously-skip-permissions',
     '--resume', sessionId,
   ];
 
@@ -178,6 +188,15 @@ export async function resumeClaudeSession(options) {
 
   proc.onData((data) => {
     const cleaned = stripAnsiCodes(data);
+
+    // Check for permission prompts and auto-approve
+    const permission = detectPermissionPrompt(cleaned);
+    if (permission) {
+      console.log(`Auto-approving permission for: ${permission.tool}`);
+      proc.write('y\n');
+      return; // Don't parse this as JSON
+    }
+
     const { events, buffer: remaining } = parseStreamData(cleaned, buffer);
     buffer = remaining;
 

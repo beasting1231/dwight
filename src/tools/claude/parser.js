@@ -119,6 +119,40 @@ export function detectQuestionInText(text) {
 }
 
 /**
+ * Detect if output is a permission prompt from Claude Code
+ * These appear when --dangerously-skip-permissions is not used
+ * @param {string} text - Raw text from PTY output
+ * @returns {Object|null} { type: 'permission', tool: string } or null
+ */
+export function detectPermissionPrompt(text) {
+  if (!text) return null;
+
+  // Permission prompts look like:
+  // "Allow Read tool? [y/n]"
+  // "Allow Bash tool? [y/n]"
+  // "Do you want to allow this tool? (y/n)"
+  const permissionPatterns = [
+    /Allow (\w+)(?: tool)?\?\s*\[?[yYnN]/i,
+    /allow this (?:tool|action)\?\s*\(?[yYnN]/i,
+    /permission.*\[?[yYnN]\/[yYnN]\]?/i,
+    /Do you trust.*\[?[yYnN]/i,
+  ];
+
+  for (const pattern of permissionPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return {
+        type: 'permission',
+        tool: match[1] || 'unknown',
+        raw: text,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
  * Generate a brief summary from Claude's result
  * @param {Object} parsed - Parsed result event
  * @returns {string} 1-2 sentence summary
