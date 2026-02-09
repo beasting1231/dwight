@@ -180,6 +180,7 @@ function handleClaudeEvent(event, sessionId, chatId) {
 
   // Update session ID from init event
   if (parsed.initialized && parsed.sessionId) {
+    console.log(`[Claude ${sessionId}] Initialized with model: ${parsed.model}`);
     // Claude provides its own session ID
     updateClaudeSession(sessionId, {
       claudeSessionId: parsed.sessionId,
@@ -190,6 +191,10 @@ function handleClaudeEvent(event, sessionId, chatId) {
 
   // Handle task completion
   if (parsed.isComplete) {
+    const status = parsed.success ? 'SUCCESS' : 'ERROR';
+    const costStr = parsed.cost ? `$${parsed.cost.toFixed(4)}` : 'N/A';
+    console.log(`[Claude ${sessionId}] Completed: ${status} | Cost: ${costStr}`);
+
     removeRunningTask(sessionId);
     lastProgressNotification.delete(sessionId); // Cleanup
 
@@ -218,6 +223,8 @@ function handleClaudeEvent(event, sessionId, chatId) {
 
   // Handle input request (AskUserQuestion)
   if (parsed.needsInput) {
+    console.log(`[Claude ${sessionId}] Asking: ${truncate(parsed.question, 100)}`);
+
     addActivityEntry(sessionId, {
       type: 'question',
       question: truncate(parsed.question, 200),
@@ -266,6 +273,9 @@ function handleClaudeEvent(event, sessionId, chatId) {
 
   // Track tool usage
   if (parsed.toolName) {
+    const inputPreview = parsed.toolInput ? truncate(JSON.stringify(parsed.toolInput), 100) : '';
+    console.log(`[Claude ${sessionId}] Tool: ${parsed.toolName} ${inputPreview}`);
+
     addActivityEntry(sessionId, {
       type: 'tool',
       name: parsed.toolName,
