@@ -6,7 +6,7 @@ import chalk from 'chalk';
 import readline from 'readline';
 import TelegramBot from 'node-telegram-bot-api';
 import { loadConfig, saveVerifiedUser } from './config.js';
-import { getModelShortName, supportsVision } from './models.js';
+import { getModelShortName, supportsVision, MODELS } from './models.js';
 import { transcribeBuffer, isWhisperAvailable } from './whisper.js';
 import {
   conversations,
@@ -74,6 +74,7 @@ export async function startBot(config) {
   // Register bot commands for Telegram menu
   await bot.setMyCommands([
     { command: 'start', description: 'Start the bot' },
+    { command: 'model', description: 'Change AI model' },
     { command: 'clear', description: 'Clear conversation history' },
     { command: 'restart', description: 'Reload config and memory' },
     { command: 'update', description: 'Update to latest version' },
@@ -106,6 +107,143 @@ export async function startBot(config) {
     conversations.delete(chatId);
     clearToolLog();
     bot.sendMessage(chatId, '🗑️ Conversation cleared! Starting fresh.');
+  });
+
+  // Handle /model command to change AI model
+  bot.onText(/\/model/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    // Only allow verified users
+    const allowedPhones = config.telegram.allowedPhones || [];
+    if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to change the model.');
+      return;
+    }
+
+    const currentModel = getModelShortName(config.ai?.model);
+    const currentProvider = config.ai?.provider || 'none';
+
+    await bot.sendMessage(chatId,
+      `🤖 *Current Model:* ${currentModel}\n*Provider:* ${currentProvider}\n\nSelect a provider:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🟠 Anthropic (Direct)', callback_data: 'model_provider:anthropic' },
+            ],
+            [
+              { text: '🌐 OpenRouter (Multi-provider)', callback_data: 'model_provider:openrouter' },
+            ],
+            [
+              { text: '❌ Cancel', callback_data: 'model_cancel' },
+            ],
+          ],
+        },
+      }
+    );
+  });
+
+  // Handle model selection callbacks
+  bot.on('callback_query', async (query) => {
+    const chatId = query.message.chat.id;
+    const data = query.data;
+
+    // Provider selection
+    if (data.startsWith('model_provider:')) {
+      const provider = data.replace('model_provider:', '');
+      const models = MODELS[provider] || [];
+
+      if (models.length === 0) {
+        await bot.answerCallbackQuery(query.id, { text: 'No models available' });
+        return;
+      }
+
+      // Build model buttons (2 per row for better display)
+      const buttons = [];
+      for (let i = 0; i < models.length; i += 1) {
+        const model = models[i];
+        const shortName = model.name.split('(')[0].trim();
+        buttons.push([{
+          text: `${shortName} - ${model.pricing}`,
+          callback_data: `model_select:${provider}:${model.value}`,
+        }]);
+      }
+      buttons.push([{ text: '⬅️ Back', callback_data: 'model_back' }]);
+
+      await bot.editMessageText(
+        `🤖 *Select a model from ${provider}:*`,
+        {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: buttons },
+        }
+      );
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Model selection
+    if (data.startsWith('model_select:')) {
+      const [, provider, ...modelParts] = data.split(':');
+      const model = modelParts.join(':'); // Handle model names with colons
+
+      // Update config
+      config.ai.provider = provider;
+      config.ai.model = model;
+
+      // Save to config file
+      const { saveConfig } = await import('./config.js');
+      saveConfig(config);
+
+      const shortName = getModelShortName(model);
+
+      await bot.editMessageText(
+        `✅ *Model changed!*\n\n*Provider:* ${provider}\n*Model:* ${shortName}`,
+        {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+          parse_mode: 'Markdown',
+        }
+      );
+      await bot.answerCallbackQuery(query.id, { text: `Switched to ${shortName}` });
+
+      // Update UI
+      drawUI(config, 'online');
+      return;
+    }
+
+    // Back button
+    if (data === 'model_back') {
+      const currentModel = getModelShortName(config.ai?.model);
+      const currentProvider = config.ai?.provider || 'none';
+
+      await bot.editMessageText(
+        `🤖 *Current Model:* ${currentModel}\n*Provider:* ${currentProvider}\n\nSelect a provider:`,
+        {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🟠 Anthropic (Direct)', callback_data: 'model_provider:anthropic' }],
+              [{ text: '🌐 OpenRouter (Multi-provider)', callback_data: 'model_provider:openrouter' }],
+              [{ text: '❌ Cancel', callback_data: 'model_cancel' }],
+            ],
+          },
+        }
+      );
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Cancel
+    if (data === 'model_cancel') {
+      await bot.deleteMessage(chatId, query.message.message_id);
+      await bot.answerCallbackQuery(query.id, { text: 'Cancelled' });
+      return;
+    }
   });
 
   // Handle /restart command to reload config (keeps conversation)
