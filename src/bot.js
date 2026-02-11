@@ -596,12 +596,15 @@ AUTHENTICATION: If claude_start fails with exit code -2 or "command not found", 
         console.log(chalk.cyan('  Backed up soul.md'));
       }
 
-      // Reset tools.md to get latest version (but preserve user.md and soul.md)
-      await execAsync('git checkout -- memory/tools.md', { cwd: projectDir }).catch(() => {});
+      // Stash any local changes to avoid conflicts
+      await execAsync('git stash --include-untracked', { cwd: projectDir }).catch(() => {
+        console.log(chalk.yellow('  No changes to stash'));
+      });
 
-      // Pull latest
-      const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
-      console.log(chalk.cyan('  git pull: ' + gitOut.trim()));
+      // Fetch and reset to origin/main (clean pull)
+      await execAsync('git fetch origin', { cwd: projectDir });
+      await execAsync('git reset --hard origin/main', { cwd: projectDir });
+      console.log(chalk.cyan('  Updated to latest version'));
 
       // Restore user.md from backup (preserve personalized content)
       if (userMdBackup) {
