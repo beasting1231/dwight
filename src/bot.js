@@ -47,8 +47,15 @@ import { initializeTools, cleanupTools, startScheduler, stopScheduler, getSchedu
 import { formatPattern } from './tools/cron/patterns.js';
 import { loadCrons } from './tools/cron/storage.js';
 import { needsOnboarding, processOnboarding } from './chatOnboarding.js';
+import { initMemoryFiles } from './initMemory.js';
 
 export async function startBot(config) {
+  // Initialize memory files if they don't exist (first startup)
+  const createdFiles = initMemoryFiles();
+  if (createdFiles.length > 0) {
+    console.log(chalk.cyan(`  Initialized memory files: ${createdFiles.join(', ')}`));
+  }
+
   // Load previously verified users
   loadVerifiedUsers();
 
@@ -568,21 +575,29 @@ AUTHENTICATION: If claude_start fails with exit code -2 or "command not found", 
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
       const projectDir = path.join(__dirname, '..');
 
-      // Backup user.md (personalized), then pull, then restore
+      // Backup personalized files (user.md, soul.md), then pull, then restore
       await bot.sendMessage(chatId, '📥 Pulling latest changes...');
 
       const fs = await import('fs');
       const userMdPath = path.join(projectDir, 'memory', 'user.md');
+      const soulMdPath = path.join(projectDir, 'memory', 'soul.md');
       let userMdBackup = null;
+      let soulMdBackup = null;
 
-      // Backup user.md if it exists (it's personalized and should be preserved)
+      // Backup user.md if it exists (personalized content)
       if (fs.existsSync(userMdPath)) {
         userMdBackup = fs.readFileSync(userMdPath, 'utf8');
         console.log(chalk.cyan('  Backed up user.md'));
       }
 
-      // Reset any local changes to tracked files (tools.md, soul.md will get updated)
-      await execAsync('git checkout -- memory/tools.md memory/soul.md', { cwd: projectDir }).catch(() => {});
+      // Backup soul.md if it exists (personalized bot behavior)
+      if (fs.existsSync(soulMdPath)) {
+        soulMdBackup = fs.readFileSync(soulMdPath, 'utf8');
+        console.log(chalk.cyan('  Backed up soul.md'));
+      }
+
+      // Reset tools.md to get latest version (but preserve user.md and soul.md)
+      await execAsync('git checkout -- memory/tools.md', { cwd: projectDir }).catch(() => {});
 
       // Pull latest
       const { stdout: gitOut } = await execAsync('git pull', { cwd: projectDir });
@@ -592,6 +607,12 @@ AUTHENTICATION: If claude_start fails with exit code -2 or "command not found", 
       if (userMdBackup) {
         fs.writeFileSync(userMdPath, userMdBackup);
         console.log(chalk.cyan('  Restored user.md'));
+      }
+
+      // Restore soul.md from backup (preserve personalized bot behavior)
+      if (soulMdBackup) {
+        fs.writeFileSync(soulMdPath, soulMdBackup);
+        console.log(chalk.cyan('  Restored soul.md'));
       }
 
       // Run install script for system deps + npm
