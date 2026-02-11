@@ -2,6 +2,7 @@ import {
   getOnboardingState,
   saveOnboardingState,
   setBotName,
+  isSession,
 } from './config.js';
 import { writeMemory, readMemory } from './tools/memory/index.js';
 
@@ -21,6 +22,8 @@ const STEPS = {
  * Check if onboarding is needed for this chat
  */
 export function needsOnboarding(chatId) {
+  // Session groups inherit onboarding from the owner's private chat
+  if (isSession(chatId)) return false;
   const state = getOnboardingState(chatId);
   return !state.complete;
 }

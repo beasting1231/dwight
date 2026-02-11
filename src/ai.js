@@ -131,7 +131,7 @@ async function callAnthropicAPI(config, messages, useTools = false) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.ai.apiKey,
+      'x-api-key': config.ai.apiKey || config.apiKeys?.anthropic,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(body),
@@ -171,7 +171,7 @@ async function callOpenRouterAPI(config, messages, useTools = false) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.ai.apiKey}`,
+      'Authorization': `Bearer ${config.ai.apiKey || config.apiKeys?.openrouter}`,
       'HTTP-Referer': 'https://github.com/dwight-bot',
       'X-Title': 'Dwight Telegram Bot',
     },
@@ -189,7 +189,7 @@ async function callOpenRouterAPI(config, messages, useTools = false) {
 /**
  * Process Anthropic response and handle tool calls
  */
-async function processAnthropicResponse(config, response, history) {
+async function processAnthropicResponse(config, response, history, chatId) {
   const content = response.content;
 
   // Check if there are tool calls
@@ -200,6 +200,9 @@ async function processAnthropicResponse(config, response, history) {
     const textBlock = content.find(block => block.type === 'text');
     return textBlock?.text || '';
   }
+
+  // Restore chat context before executing tools (may have been overwritten by concurrent request)
+  setCurrentChatId(chatId);
 
   // Execute tools
   const toolResults = [];
@@ -222,14 +225,17 @@ async function processAnthropicResponse(config, response, history) {
 
   // Call API again to get final response
   const followUp = await callAnthropicAPI(config, history, true);
-  return processAnthropicResponse(config, followUp, history);
+  return processAnthropicResponse(config, followUp, history, chatId);
 }
 
 /**
  * Process OpenRouter response and handle tool calls
  */
-async function processOpenRouterResponse(config, response, history) {
-  const choice = response.choices[0];
+async function processOpenRouterResponse(config, response, history, chatId) {
+  const choice = response.choices?.[0];
+  if (!choice || !choice.message) {
+    throw new Error('Invalid API response: no choices returned');
+  }
   const message = choice.message;
 
   // Check for native tool calls first
@@ -240,6 +246,9 @@ async function processOpenRouterResponse(config, response, history) {
       content: message.content || '',
       tool_calls: message.tool_calls,
     });
+
+    // Restore chat context before executing tools (may have been overwritten by concurrent request)
+    setCurrentChatId(chatId);
 
     // Execute tools and add results
     for (const toolCall of message.tool_calls) {
@@ -257,7 +266,7 @@ async function processOpenRouterResponse(config, response, history) {
 
     // Call API again to get final response
     const followUp = await callOpenRouterAPI(config, history, true);
-    return processOpenRouterResponse(config, followUp, history);
+    return processOpenRouterResponse(config, followUp, history, chatId);
   }
 
   // Check for text-based tool calls (Gemini often outputs these instead)
@@ -280,6 +289,9 @@ async function processOpenRouterResponse(config, response, history) {
       tool_calls: fakeToolCalls,
     });
 
+    // Restore chat context before executing tools
+    setCurrentChatId(chatId);
+
     // Execute tools and add results
     for (let i = 0; i < textToolCalls.length; i++) {
       const tc = textToolCalls[i];
@@ -296,7 +308,7 @@ async function processOpenRouterResponse(config, response, history) {
 
     // Call API again to get final response
     const followUp = await callOpenRouterAPI(config, history, true);
-    return processOpenRouterResponse(config, followUp, history);
+    return processOpenRouterResponse(config, followUp, history, chatId);
   }
 
   // No tool calls, return content
@@ -346,6 +358,39 @@ function formatMessageContent(text, image, provider) {
 }
 
 /**
+ * Trim history to max messages, ensuring we don't cut in the middle
+ * of a tool-call exchange (assistant with tool_calls must be followed
+ * by its tool results).
+ */
+function trimHistory(history, maxMessages = 20) {
+  if (history.length <= maxMessages) return;
+
+  let cutIndex = history.length - maxMessages;
+
+  // Walk forward from cutIndex to find a safe boundary —
+  // don't start on a 'tool' message or split assistant+tool pairs
+  while (cutIndex < history.length) {
+    const msg = history[cutIndex];
+    // If this is a tool result, we'd be orphaning it — move past it
+    if (msg.role === 'tool') {
+      cutIndex++;
+      continue;
+    }
+    // If this is a tool_result (Anthropic format), also skip
+    if (msg.role === 'user' && Array.isArray(msg.content) &&
+        msg.content[0]?.type === 'tool_result') {
+      cutIndex++;
+      continue;
+    }
+    break;
+  }
+
+  if (cutIndex > 0) {
+    history.splice(0, cutIndex);
+  }
+}
+
+/**
  * Get AI response with optional tool support
  * @param {Object} config - Bot config
  * @param {number} chatId - Chat ID
@@ -353,7 +398,7 @@ function formatMessageContent(text, image, provider) {
  * @param {Object} image - Optional image { base64, mimeType }
  */
 export async function getAIResponse(config, chatId, userMessage, image = null) {
-  // Set current chat context for tools
+  // Set current chat context for tools (scoped per-call for concurrency)
   setCurrentChatId(chatId);
 
   // Get or create conversation history
@@ -368,22 +413,32 @@ export async function getAIResponse(config, chatId, userMessage, image = null) {
   // Add user message to history
   history.push({ role: 'user', content });
 
-  // Keep only last 20 messages to avoid token limits
-  if (history.length > 20) {
-    history.splice(0, history.length - 20);
-  }
+  // Trim history safely (won't break tool-call sequences)
+  trimHistory(history, 20);
+
+  // Take a snapshot of the history for this API call so concurrent
+  // requests to other chats don't mutate our in-flight messages
+  const callHistory = [...history];
 
   const useTools = areToolsEnabled();
   let response;
 
   if (config.ai.provider === 'anthropic') {
-    const result = await callAnthropicAPI(config, history, useTools);
-    response = await processAnthropicResponse(config, result, history);
+    const result = await callAnthropicAPI(config, callHistory, useTools);
+    response = await processAnthropicResponse(config, result, callHistory, chatId);
   } else if (config.ai.provider === 'openrouter') {
-    const result = await callOpenRouterAPI(config, history, useTools);
-    response = await processOpenRouterResponse(config, result, history);
+    const result = await callOpenRouterAPI(config, callHistory, useTools);
+    response = await processOpenRouterResponse(config, result, callHistory, chatId);
   } else {
     throw new Error('No AI provider configured');
+  }
+
+  // Sync any tool-call messages that were appended during processing
+  // back into the stored history (callHistory may have grown)
+  const originalLen = history.length;
+  const newMessages = callHistory.slice(originalLen);
+  for (const msg of newMessages) {
+    history.push(msg);
   }
 
   // Add final assistant response to history

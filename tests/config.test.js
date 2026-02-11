@@ -9,6 +9,10 @@ import {
   saveVerifiedUser,
   getFileMode,
   setFileMode,
+  getSessions,
+  addSession,
+  removeSession,
+  isSession,
   CONFIG_PATH
 } from '../src/config.js';
 
@@ -213,6 +217,98 @@ describe('config', () => {
 
       const savedConfig = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
       expect(savedConfig.fileMode).toBe('ask');
+    });
+  });
+
+  describe('getSessions', () => {
+    it('should return empty array when no sessions exist', () => {
+      fs.existsSync = jest.fn().mockReturnValue(false);
+      expect(getSessions()).toEqual([]);
+    });
+
+    it('should return sessions from config', () => {
+      const mockConfig = { sessions: [{ chatId: -100123, name: 'Work', createdAt: '2026-01-01' }] };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(mockConfig));
+      expect(getSessions()).toEqual(mockConfig.sessions);
+    });
+  });
+
+  describe('addSession', () => {
+    it('should add a new session to config', () => {
+      const existingConfig = { telegram: { token: 'test' } };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(existingConfig));
+      fs.writeFileSync = jest.fn();
+
+      addSession(-100123, 'Work');
+
+      const savedConfig = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
+      expect(savedConfig.sessions).toHaveLength(1);
+      expect(savedConfig.sessions[0].chatId).toBe(-100123);
+      expect(savedConfig.sessions[0].name).toBe('Work');
+      expect(savedConfig.sessions[0].createdAt).toBeDefined();
+    });
+
+    it('should not add duplicate session', () => {
+      const existingConfig = { sessions: [{ chatId: -100123, name: 'Work', createdAt: '2026-01-01' }] };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(existingConfig));
+      fs.writeFileSync = jest.fn();
+
+      addSession(-100123, 'Work Again');
+
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('removeSession', () => {
+    it('should remove an existing session', () => {
+      const existingConfig = { sessions: [{ chatId: -100123, name: 'Work', createdAt: '2026-01-01' }] };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(existingConfig));
+      fs.writeFileSync = jest.fn();
+
+      const result = removeSession(-100123);
+
+      expect(result).toBe(true);
+      const savedConfig = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
+      expect(savedConfig.sessions).toHaveLength(0);
+    });
+
+    it('should return false when session does not exist', () => {
+      const existingConfig = { sessions: [] };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(existingConfig));
+      fs.writeFileSync = jest.fn();
+
+      const result = removeSession(-999);
+
+      expect(result).toBe(false);
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isSession', () => {
+    it('should return true for a registered session', () => {
+      const mockConfig = { sessions: [{ chatId: -100123, name: 'Work', createdAt: '2026-01-01' }] };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(mockConfig));
+
+      expect(isSession(-100123)).toBe(true);
+    });
+
+    it('should return false for an unregistered chatId', () => {
+      const mockConfig = { sessions: [] };
+      fs.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFileSync = jest.fn().mockReturnValue(JSON.stringify(mockConfig));
+
+      expect(isSession(-999)).toBe(false);
+    });
+
+    it('should return false when no config exists', () => {
+      fs.existsSync = jest.fn().mockReturnValue(false);
+      expect(isSession(-100123)).toBe(false);
     });
   });
 });

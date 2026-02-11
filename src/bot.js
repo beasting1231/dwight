@@ -5,7 +5,7 @@ process.env.NTBA_FIX_350 = 1;
 import chalk from 'chalk';
 import readline from 'readline';
 import TelegramBot from 'node-telegram-bot-api';
-import { loadConfig, saveVerifiedUser } from './config.js';
+import { loadConfig, saveVerifiedUser, saveApiKey, saveConfig, isSession, addSession, removeSession, getSessions } from './config.js';
 import { getModelShortName, supportsVision, MODELS } from './models.js';
 import { transcribeBuffer, isWhisperAvailable } from './whisper.js';
 import {
@@ -49,12 +49,6 @@ import { loadCrons } from './tools/cron/storage.js';
 import { needsOnboarding, processOnboarding } from './chatOnboarding.js';
 
 export async function startBot(config) {
-  // Check AI config
-  if (!config.ai?.apiKey || config.ai.provider === 'none') {
-    console.log(chalk.red('❌ No AI provider configured. Run setup first.'));
-    return;
-  }
-
   // Load previously verified users
   loadVerifiedUsers();
 
@@ -69,9 +63,16 @@ export async function startBot(config) {
     return;
   }
 
+  // Fetch bot info for username (needed for group message handling)
+  let botUsername = '';
+  try {
+    const me = await bot.getMe();
+    botUsername = (me.username || '').toLowerCase();
+  } catch {}
+
   drawUI(config, 'online');
 
-  // Register bot commands for Telegram menu
+  // Register bot commands for Telegram menu (private chats)
   await bot.setMyCommands([
     { command: 'start', description: 'Start the bot' },
     { command: 'model', description: 'Change AI model' },
@@ -81,14 +82,56 @@ export async function startBot(config) {
     { command: 'cron', description: 'List scheduled tasks' },
     { command: 'claude', description: 'Manage Claude Code sessions' },
     { command: 'claudeauth', description: 'Authenticate Claude Code CLI' },
+    { command: 'session', description: 'Manage chat sessions' },
     { command: 'stop', description: 'Stop the bot process' },
+    { command: 'config', description: 'Configure API keys' },
   ]);
+
+  // Register commands visible in group chats
+  await bot.setMyCommands([
+    { command: 'start', description: 'Start the bot' },
+    { command: 'model', description: 'Change AI model' },
+    { command: 'clear', description: 'Clear conversation history' },
+    { command: 'restart', description: 'Reload config and memory' },
+    { command: 'update', description: 'Update to latest version' },
+    { command: 'cron', description: 'List scheduled tasks' },
+    { command: 'claude', description: 'Manage Claude Code sessions' },
+    { command: 'claudeauth', description: 'Authenticate Claude Code CLI' },
+    { command: 'session', description: 'Manage chat sessions' },
+    { command: 'stop', description: 'Stop the bot process' },
+    { command: 'config', description: 'Configure API keys' },
+  ], { scope: { type: 'all_group_chats' } });
 
   // Track pending stop confirmations
   const pendingStopConfirmations = new Set();
 
+  // Track pending API key input: chatId -> { provider, providerLabel }
+  const pendingApiKeyInput = new Map();
+
+  // Handle /config command
+  bot.onText(/\/config/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    // Only allow verified users
+    const allowedPhones = config.telegram.allowedPhones || [];
+    if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to configure the bot.');
+      return;
+    }
+
+    await bot.sendMessage(chatId, '⚙️ *Configuration*\n\nWhat would you like to configure?', {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔑 API Keys', callback_data: 'config_apikeys' }],
+          [{ text: '❌ Close', callback_data: 'config_close' }],
+        ],
+      },
+    });
+  });
+
   // Handle /start command
-  bot.onText(/\/start/, async (msg) => {
+  bot.onText(/\/start$/, async (msg) => {
     const chatId = msg.chat.id;
 
     // Check if onboarding is needed
@@ -148,6 +191,87 @@ export async function startBot(config) {
   bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
+
+    // Config: API Keys menu
+    if (data === 'config_apikeys') {
+      const currentConfig = loadConfig() || {};
+      const keys = currentConfig.apiKeys || {};
+      const hasGemini = !!currentConfig.image?.googleApiKey;
+      const hasBrave = !!currentConfig.web?.braveApiKey;
+
+      const providers = [
+        { label: 'Google Gemini', key: 'gemini', has: hasGemini },
+        { label: 'OpenAI', key: 'openai', has: !!keys.openai },
+        { label: 'Anthropic', key: 'anthropic', has: !!keys.anthropic },
+        { label: 'OpenRouter', key: 'openrouter', has: !!keys.openrouter },
+        { label: 'Brave Web Search', key: 'brave', has: hasBrave },
+      ];
+
+      const buttons = providers.map(p => [{
+        text: `${p.has ? '✅' : '⬜'} ${p.label}`,
+        callback_data: `config_setkey:${p.key}`,
+      }]);
+      buttons.push([{ text: '⬅️ Back', callback_data: 'config_back' }]);
+
+      await bot.editMessageText('🔑 *API Keys*\n\nSelect a provider to configure:', {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: buttons },
+      });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Config: Provider selected — prompt for key
+    if (data.startsWith('config_setkey:')) {
+      const providerKey = data.replace('config_setkey:', '');
+      const providerLabels = {
+        gemini: 'Google Gemini',
+        openai: 'OpenAI',
+        anthropic: 'Anthropic',
+        openrouter: 'OpenRouter',
+        brave: 'Brave Web Search',
+      };
+      const label = providerLabels[providerKey] || providerKey;
+
+      pendingApiKeyInput.set(chatId, { provider: providerKey, providerLabel: label });
+
+      await bot.editMessageText(
+        `🔑 *${label}*\n\nPlease paste your API key for ${label}:`,
+        {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+          parse_mode: 'Markdown',
+        }
+      );
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Config: Back to main config menu
+    if (data === 'config_back') {
+      await bot.editMessageText('⚙️ *Configuration*\n\nWhat would you like to configure?', {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔑 API Keys', callback_data: 'config_apikeys' }],
+            [{ text: '❌ Close', callback_data: 'config_close' }],
+          ],
+        },
+      });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Config: Close
+    if (data === 'config_close') {
+      await bot.deleteMessage(chatId, query.message.message_id);
+      await bot.answerCallbackQuery(query.id, { text: 'Closed' });
+      return;
+    }
 
     // Provider selection
     if (data.startsWith('model_provider:')) {
@@ -386,6 +510,93 @@ export async function startBot(config) {
 
     message += '_To manage tasks, just ask me (e.g. "disable the email summary task")_';
 
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  });
+
+  // Helper to check if a user is the bot owner (verified in any chat)
+  const isOwner = (userId) => {
+    for (const [, phone] of verifiedUsers) {
+      // If any verified chat maps to a phone, check if this userId matches
+      // We also check if the userId itself is a verified chatId (private chat = userId)
+      if (verifiedUsers.has(userId)) return true;
+    }
+    return false;
+  };
+
+  // Handle /session command to manage group chat sessions
+  bot.onText(/\/session(?:\s+(.*))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const subcommand = match[1]?.trim();
+    const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+
+    // Only allow verified users (check by userId since group chatIds won't be in verifiedUsers)
+    if (!isOwner(userId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to manage sessions.');
+      return;
+    }
+
+    // /session remove — unregister this group
+    if (isGroup && subcommand === 'remove') {
+      if (removeSession(chatId)) {
+        await bot.sendMessage(chatId, '✅ Session removed. I will no longer respond in this group.');
+      } else {
+        await bot.sendMessage(chatId, '⚠️ This group is not a registered session.');
+      }
+      return;
+    }
+
+    // /session in a group — register it
+    if (isGroup) {
+      if (isSession(chatId)) {
+        await bot.sendMessage(chatId, '✅ This group is already a registered session.');
+        return;
+      }
+      const groupName = msg.chat.title || 'Unnamed Session';
+      addSession(chatId, groupName);
+
+      // Check if bot can read all messages in this group
+      let canReadAll = false;
+      try {
+        const me = await bot.getMe();
+        if (me.can_read_all_group_messages) {
+          canReadAll = true;
+        } else {
+          // Check if bot is an admin (admins can read all messages)
+          const member = await bot.getChatMember(chatId, me.id);
+          canReadAll = member.status === 'administrator' || member.status === 'creator';
+        }
+      } catch {}
+
+      let responseMsg = `✅ Session registered: *${groupName}*\n\nThis group is now an independent chat session.`;
+      if (!canReadAll) {
+        responseMsg += `\n\n⚠️ *Important:* I can't read regular messages in this group yet. Please make me an admin so I can see all messages. Otherwise, you'll need to reply to my messages or mention @${botUsername} for me to respond.`;
+      }
+      await bot.sendMessage(chatId, responseMsg, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    // /session in a private chat — list all sessions
+    const sessions = getSessions();
+    if (sessions.length === 0) {
+      await bot.sendMessage(chatId,
+        '📋 *Chat Sessions*\n\n' +
+        'No sessions registered.\n\n' +
+        'To create one:\n' +
+        '1\\. Create a Telegram group\n' +
+        '2\\. Add me to the group\n' +
+        '3\\. Send /session in the group',
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+
+    let message = '📋 *Chat Sessions*\n\n';
+    for (const session of sessions) {
+      const created = new Date(session.createdAt).toLocaleDateString();
+      message += `• *${session.name}*\n    Created: ${created}\n\n`;
+    }
+    message += '_Send /session remove in a group to unregister it._';
     await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   });
 
@@ -969,6 +1180,54 @@ expect {
     }
   });
 
+  // Handle API key input from /config flow
+  bot.on('message', async (msg) => {
+    if (msg.text?.startsWith('/')) return;
+
+    const chatId = msg.chat.id;
+    const pending = pendingApiKeyInput.get(chatId);
+    if (!pending) return;
+
+    const apiKey = msg.text?.trim();
+    if (!apiKey) return;
+
+    pendingApiKeyInput.delete(chatId);
+
+    // Delete the user's message containing the key for security
+    try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+
+    // Save the key to the appropriate config location
+    const currentConfig = loadConfig() || {};
+
+    if (pending.provider === 'gemini') {
+      currentConfig.image = currentConfig.image || {};
+      currentConfig.image.googleApiKey = apiKey;
+      currentConfig.image.enabled = true;
+      saveConfig(currentConfig);
+    } else if (pending.provider === 'brave') {
+      currentConfig.web = currentConfig.web || {};
+      currentConfig.web.braveApiKey = apiKey;
+      currentConfig.web.enabled = true;
+      saveConfig(currentConfig);
+    } else {
+      // anthropic, openrouter, openai — store in apiKeys
+      saveApiKey(pending.provider, apiKey);
+
+      // Also set as active API key if this is the current provider
+      if (currentConfig.ai?.provider === pending.provider) {
+        currentConfig.ai.apiKey = apiKey;
+        currentConfig.apiKeys = currentConfig.apiKeys || {};
+        currentConfig.apiKeys[pending.provider] = apiKey;
+        saveConfig(currentConfig);
+      }
+    }
+
+    // Reload config into active bot
+    Object.assign(config, loadConfig());
+
+    await bot.sendMessage(chatId, `✅ *${pending.providerLabel}* API key saved!`, { parse_mode: 'Markdown' });
+  });
+
   // Handle contact sharing for phone verification
   bot.on('contact', (msg) => {
     const chatId = msg.chat.id;
@@ -1007,6 +1266,7 @@ expect {
     if (msg.contact) return;
 
     const chatId = msg.chat.id;
+    console.log(chalk.magenta(`  [DEBUG] Message handler entered. chatId=${chatId} text="${(msg.text || '').slice(0, 50)}"`));
 
     // Skip if pending Claude auth (the auth handler will process this message)
     if (pendingClaudeAuth.has(chatId) && pendingClaudeAuth.get(chatId).urlSent?.()) return;
@@ -1014,13 +1274,34 @@ expect {
     // Check phone restrictions
     const allowedPhones = config.telegram.allowedPhones || [];
     if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
-      bot.sendMessage(chatId, '📱 Please share your phone number to verify access:', {
-        reply_markup: {
-          keyboard: [[{ text: '📞 Share Phone Number', request_contact: true }]],
-          resize_keyboard: true,
-          one_time_keyboard: true
-        }
-      });
+      // Allow registered session groups if the sender is the owner
+      if (isSession(chatId) && isOwner(msg.from.id)) {
+        // Session group — owner verified, allow through
+      } else if (isSession(chatId)) {
+        // Session group but sender is not the owner — ignore silently
+        return;
+      } else {
+        bot.sendMessage(chatId, '📱 Please share your phone number to verify access:', {
+          reply_markup: {
+            keyboard: [[{ text: '📞 Share Phone Number', request_contact: true }]],
+            resize_keyboard: true,
+            one_time_keyboard: true
+          }
+        });
+        return;
+      }
+    }
+
+    // Ignore messages in unregistered group chats
+    const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+    if (isGroup && !isSession(chatId)) {
+      return;
+    }
+
+    // Check AI provider is configured before processing messages
+    const activeApiKey = config.ai?.apiKey || config.apiKeys?.[config.ai?.provider];
+    if (!activeApiKey || config.ai.provider === 'none') {
+      bot.sendMessage(chatId, '⚠️ No AI provider configured yet. Use /config to set up your API keys.');
       return;
     }
 
@@ -1072,8 +1353,11 @@ expect {
       }
     }
 
-    // Handle text or photo messages
-    const userMessage = voiceTranscription || msg.text || msg.caption || '';
+    // Handle text or photo messages — strip bot mention in group chats
+    let userMessage = voiceTranscription || msg.text || msg.caption || '';
+    if (botUsername && userMessage) {
+      userMessage = userMessage.replace(new RegExp(`@${botUsername}\\b`, 'gi'), '').trim();
+    }
     const hasPhoto = msg.photo && msg.photo.length > 0;
 
     // Skip if no text and no photo and no voice
@@ -1174,8 +1458,11 @@ expect {
     incrementProcessing();
     drawUI(config, 'processing');
 
+    console.log(chalk.magenta(`  [DEBUG] About to call getAIResponse. chatId=${chatId} message="${finalMessage.slice(0, 80)}"`));
+
     try {
       const response = await getAIResponse(config, chatId, finalMessage, image);
+      console.log(chalk.magenta(`  [DEBUG] getAIResponse returned. length=${response?.length} first50="${(response || '').slice(0, 50)}"`));
 
       // Send response
       const isEmailConfirmation = response && /^(email|mail)\s+(sent|delivered)/i.test(response.trim());
@@ -1225,6 +1512,8 @@ expect {
         drawUI(config, 'online');
       }
     } catch (error) {
+      console.log(chalk.red(`  [DEBUG] getAIResponse ERROR: ${error.message}`));
+      console.log(chalk.red(`  [DEBUG] Stack: ${error.stack}`));
       bot.sendMessage(chatId, `❌ Sorry, I encountered an error: ${error.message}`);
     }
 
@@ -1362,9 +1651,20 @@ expect {
 
   // CLI command interface - wrapped in Promise to allow returning to menu
   await new Promise((resolve) => {
+  // If stdin is not a TTY (e.g. running in background), skip CLI interface
+  // and just keep the bot running via the promise that never resolves
+  if (!process.stdin.isTTY) {
+    return;
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
+  });
+
+  // Handle unexpected readline close (stdin EOF) — keep bot running
+  rl.on('close', () => {
+    // Don't resolve — let the bot keep running without CLI
   });
 
   const promptCommand = () => {

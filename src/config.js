@@ -134,3 +134,53 @@ export function setBashMode(mode) {
   config.bashMode = mode;
   saveConfig(config);
 }
+
+/**
+ * Get all registered sessions
+ * @returns {Array<{ chatId: number, name: string, createdAt: string }>}
+ */
+export function getSessions() {
+  const config = loadConfig();
+  return config?.sessions || [];
+}
+
+/**
+ * Add a registered session
+ * @param {number} chatId - The group chat ID
+ * @param {string} name - The group name
+ */
+export function addSession(chatId, name) {
+  const config = loadConfig() || {};
+  config.sessions = config.sessions || [];
+  if (!config.sessions.some(s => s.chatId === chatId)) {
+    config.sessions.push({ chatId, name, createdAt: new Date().toISOString() });
+    saveConfig(config);
+  }
+}
+
+/**
+ * Remove a registered session
+ * @param {number} chatId - The group chat ID
+ * @returns {boolean} Whether a session was removed
+ */
+export function removeSession(chatId) {
+  const config = loadConfig() || {};
+  config.sessions = config.sessions || [];
+  const before = config.sessions.length;
+  config.sessions = config.sessions.filter(s => s.chatId !== chatId);
+  if (config.sessions.length < before) {
+    saveConfig(config);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Check if a chatId is a registered session
+ * @param {number} chatId - The chat ID to check
+ * @returns {boolean}
+ */
+export function isSession(chatId) {
+  const config = loadConfig();
+  return (config?.sessions || []).some(s => s.chatId === chatId);
+}

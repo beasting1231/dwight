@@ -213,9 +213,9 @@ function handleClaudeEvent(event, sessionId, chatId) {
     });
 
     // Notify user
-    const costStr = parsed.cost ? ` (Cost: $${parsed.cost.toFixed(4)})` : '';
+    const costNote = parsed.cost ? ` (Cost: $${parsed.cost.toFixed(4)})` : '';
     const statusEmoji = parsed.success ? '✅' : '❌';
-    addNotification(`${statusEmoji} *Claude Code completed*\n\n${summary}${costStr}`);
+    addNotification(`${statusEmoji} *Claude Code completed*\n\n${summary}${costNote}`);
 
     saveSessions(getAllClaudeSessions());
     return;
