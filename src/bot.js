@@ -1460,6 +1460,9 @@ expect {
     // Skip if pending Claude auth (the auth handler will process this message)
     if (pendingClaudeAuth.has(chatId) && pendingClaudeAuth.get(chatId).urlSent?.()) return;
 
+    // Skip if pending API key input (the API key handler will process this message)
+    if (pendingApiKeyInput.has(chatId)) return;
+
     // Check phone restrictions
     const allowedPhones = config.telegram.allowedPhones || [];
     if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
