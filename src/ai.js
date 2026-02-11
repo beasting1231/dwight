@@ -5,11 +5,13 @@ import { logToolCall } from './ui.js';
 import { buildSystemPromptWithMemory } from './tools/memory/index.js';
 
 /**
- * Check if tools are enabled (email configured)
+ * Check if tools are enabled
+ * Tools are always enabled if AI is configured
  */
 function areToolsEnabled() {
   const config = loadConfig();
-  return config?.email?.enabled === true;
+  // Tools are enabled as long as we have an AI provider configured
+  return config?.ai?.provider && config?.ai?.provider !== 'none';
 }
 
 /**

@@ -11,10 +11,12 @@ export async function runOnboarding() {
   // Step 1: Welcome
   console.log(boxen(
     chalk.white('Welcome to ') + chalk.bold.cyan('Dwight') + chalk.white('!\n\n') +
-    chalk.gray('Let\'s get you set up with your AI-powered Telegram bot.\n') +
-    chalk.gray('You\'ll need:\n') +
-    chalk.white('  • ') + chalk.gray('A Telegram bot token from ') + chalk.underline.blue('@BotFather') + '\n' +
-    chalk.white('  • ') + chalk.gray('An API key from your AI provider'),
+    chalk.gray('Let\'s get you set up with your AI-powered Telegram bot.\n\n') +
+    chalk.gray('Required:\n') +
+    chalk.white('  • ') + chalk.gray('A Telegram bot token from ') + chalk.underline.blue('@BotFather') + '\n\n' +
+    chalk.gray('Optional (configure now or later via Telegram):\n') +
+    chalk.white('  • ') + chalk.gray('AI provider API key\n') +
+    chalk.white('  • ') + chalk.gray('Email, calendar, web search, image generation'),
     {
       padding: 1,
       margin: { top: 0, bottom: 1, left: 2, right: 2 },
@@ -55,28 +57,41 @@ export async function runOnboarding() {
     }
   ]);
 
-  // Step 3: AI Provider Selection
+  // Step 3: AI Provider Selection (Optional)
   console.log(chalk.bold.white('\n  🧠 AI PROVIDER SETUP\n'));
+  console.log(chalk.gray('  You can configure this now or later via Telegram commands.\n'));
 
-  const { aiProvider } = await inquirer.prompt([
+  const { configureAI } = await inquirer.prompt([
     {
-      type: 'list',
-      name: 'aiProvider',
-      message: chalk.cyan('Select your AI provider:'),
-      choices: [
-        {
-          name: `${chalk.bold('OpenRouter')} ${chalk.gray('- Access 400+ models (Gemini, Claude, GPT, etc)')}`,
-          value: 'openrouter'
-        },
-        {
-          name: `${chalk.bold('Anthropic Claude')} ${chalk.gray('- Direct API access to Claude models')}`,
-          value: 'anthropic'
-        },
-        new inquirer.Separator(),
-        { name: chalk.gray('Configure later'), value: 'none' }
-      ]
+      type: 'confirm',
+      name: 'configureAI',
+      message: chalk.cyan('Configure AI provider now?'),
+      default: false
     }
   ]);
+
+  let aiProvider = 'none';
+
+  if (configureAI) {
+    const aiProviderAnswer = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'aiProvider',
+        message: chalk.cyan('Select your AI provider:'),
+        choices: [
+          {
+            name: `${chalk.bold('OpenRouter')} ${chalk.gray('- Access 400+ models (Gemini, Claude, GPT, etc)')}`,
+            value: 'openrouter'
+          },
+          {
+            name: `${chalk.bold('Anthropic Claude')} ${chalk.gray('- Direct API access to Claude models')}`,
+            value: 'anthropic'
+          }
+        ]
+      }
+    ]);
+    aiProvider = aiProviderAnswer.aiProvider;
+  }
 
   let aiConfig = { provider: aiProvider };
 
@@ -217,10 +232,16 @@ export async function runOnboarding() {
     }
   ));
 
-  // Auto-start bot if AI is configured
-  if (aiProvider !== 'none') {
-    await sleep(500);
-    console.log(chalk.cyan('\n  Starting bot automatically...\n'));
-    await startBot(config);
+  // Auto-start bot
+  await sleep(500);
+  if (aiProvider === 'none') {
+    console.log(chalk.yellow('\n  ⚠️  No AI provider configured yet.'));
+    console.log(chalk.gray('  Use Telegram commands to configure:\n'));
+    console.log(chalk.white('    /api') + chalk.gray(' - Configure AI provider'));
+    console.log(chalk.white('    /model') + chalk.gray(' - Select AI model'));
+    console.log(chalk.white('    /email') + chalk.gray(' - Setup email integration'));
+    console.log(chalk.white('    /help') + chalk.gray(' - See all commands\n'));
   }
+  console.log(chalk.cyan('\n  Starting bot...\n'));
+  await startBot(config);
 }

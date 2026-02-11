@@ -77,6 +77,7 @@ export async function startBot(config) {
     { command: 'start', description: 'Start the bot' },
     { command: 'model', description: 'Change AI model' },
     { command: 'clear', description: 'Clear conversation history' },
+    { command: 'purge', description: 'Reset all data and start fresh' },
     { command: 'restart', description: 'Reload config and memory' },
     { command: 'update', description: 'Update to latest version' },
     { command: 'cron', description: 'List scheduled tasks' },
@@ -92,6 +93,7 @@ export async function startBot(config) {
     { command: 'start', description: 'Start the bot' },
     { command: 'model', description: 'Change AI model' },
     { command: 'clear', description: 'Clear conversation history' },
+    { command: 'purge', description: 'Reset all data and start fresh' },
     { command: 'restart', description: 'Reload config and memory' },
     { command: 'update', description: 'Update to latest version' },
     { command: 'cron', description: 'List scheduled tasks' },
@@ -150,6 +152,163 @@ export async function startBot(config) {
     conversations.delete(chatId);
     clearToolLog();
     bot.sendMessage(chatId, '🗑️ Conversation cleared! Starting fresh.');
+  });
+
+  // Handle /purge command to reset all data
+  bot.onText(/\/purge/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    // Only allow verified users
+    const allowedPhones = config.telegram.allowedPhones || [];
+    if (allowedPhones.length > 0 && !verifiedUsers.has(chatId)) {
+      bot.sendMessage(chatId, '⛔ You are not authorized to purge data.');
+      return;
+    }
+
+    await bot.sendMessage(chatId, '⚠️ *WARNING: This will reset ALL data*\n\nThis will:\n• Clear all memory files (user.md, soul.md, tools.md)\n• Clear conversation history\n• Reset onboarding state\n• Keep your config (API keys, etc.)\n\nReply "yes purge" to confirm.', { parse_mode: 'Markdown' });
+
+    // Set up one-time listener for confirmation
+    const confirmListener = async (confirmMsg) => {
+      if (confirmMsg.chat.id !== chatId) return;
+      if (confirmMsg.text?.toLowerCase() === 'yes purge') {
+        bot.removeListener('message', confirmListener);
+
+        await bot.sendMessage(chatId, '🔥 Purging all data...');
+
+        try {
+          const fs = await import('fs');
+          const path = await import('path');
+          const { fileURLToPath } = await import('url');
+          const __dirname = path.dirname(fileURLToPath(import.meta.url));
+          const projectDir = path.join(__dirname, '..');
+
+          // Default memory file contents
+          const defaultUserMd = `# User Profile
+
+## Basic Information
+
+- Name: (not set)
+- Location: (not set)
+
+## Preferences
+
+- (No specific preferences set)
+
+## Important Notes
+
+- (Will be updated as I learn more about you)
+
+## Things to Remember
+
+- (Key information you share will be saved here)
+`;
+
+          const defaultSoulMd = `# Dwight's Core Identity
+
+You are Dwight, an AI assistant running on Telegram with access to powerful tools.
+
+## Communication Style
+
+- Be helpful, friendly, and conversational
+- Keep responses concise unless detail is needed
+- Use natural language, not overly formal
+
+## Capabilities
+
+- Natural conversation with context memory
+- Voice message transcription
+- Email management
+- Web search
+- Image generation
+- Calendar integration
+- Scheduled tasks (cron jobs)
+- Claude Code integration for programming tasks
+
+## Guidelines
+
+- Always respect user privacy
+- Be proactive with tool usage when appropriate
+- Learn and adapt to user preferences over time
+- Store important information in memory for future reference
+`;
+
+          const defaultToolsMd = `WEB SEARCH PROTOCOL: 1) Before calling web_search, ALWAYS call datetime_now to get the current year. 2) Include the current year in the web_search query (e.g., "React 19 features 2026" not just "React features"). 3) After using search results in your response, include a "Sources:" section at the end with relevant URLs as markdown links.
+
+CRON/REMINDER PROTOCOL: When user says "remind me IN X minutes/hours" or "IN X minutes do Y", this is a ONE-TIME reminder. ALWAYS use cron_create with type: "once" and a specific datetime. NEVER use type: "interval". The word "IN" means one-time, the word "EVERY" means recurring. Examples: "in 5 minutes" = type: "once", "every 5 minutes" = type: "interval".
+
+CLAUDE CODE CLI PROTOCOL: You have access to Claude Code CLI for complex coding tasks.
+
+AVAILABLE TOOLS:
+- claude_start: Start a NEW session (only when no session exists)
+- claude_resume: Continue conversation with a COMPLETED/STOPPED session
+- claude_input: Send input to a RUNNING session that asked a question
+- claude_status: Check status and recent activity of sessions
+- claude_stop: Terminate a session
+
+WHICH TOOL TO USE - DECISION TREE:
+1. Is there an existing session? Check with claude_status first
+2. If NO session exists → use claude_start
+3. If session status is "waiting_input" (Claude asked a question) → use claude_input
+4. If session status is "completed" or "interrupted" → use claude_resume
+5. If session status is "running" → wait for it, or stop it first
+
+CLAUDE_INPUT - FOR ANSWERING QUESTIONS:
+- Use when Claude asks a question mid-task (status = "waiting_input")
+- Session stays running - just sends the answer
+- Example: Claude asks "React or Vue?" → claude_input(sessionId="claude_1", input="React")
+- This is NOW RELIABLE with PTY - use it!
+
+CLAUDE_RESUME - FOR CONTINUING CONVERSATIONS:
+- Use when session is completed/stopped and you want to continue
+- Starts a new CLI process with the conversation history
+- Auto-selects most recent session if no ID provided
+- Example: Session finished, user says "now add tests" → claude_resume(prompt="add tests")
+
+NEVER DO:
+- NEVER say "I lost track of the session" - call claude_status to find it
+- NEVER ask user for session ID - tools find it automatically
+- NEVER use claude_start when a session already exists
+- NEVER use claude_resume on a running session (use claude_input or wait)
+
+MONITORING SESSIONS: When user asks about Claude's progress:
+1. Call claude_status to get actual activity log
+2. Check recentActivity array for tool calls and timestamps
+3. If >3-5 min with no activity = likely stalled, offer to restart
+4. Report what Claude is doing based on recent tools (Read, Edit, Bash, etc.)
+
+AUTHENTICATION: If claude_start fails with exit code -2 or "command not found", tell user: "Claude Code CLI needs authentication. Run /claudeauth in Telegram."
+`;
+
+          // Write default memory files
+          fs.writeFileSync(path.join(projectDir, 'memory', 'user.md'), defaultUserMd);
+          fs.writeFileSync(path.join(projectDir, 'memory', 'soul.md'), defaultSoulMd);
+          fs.writeFileSync(path.join(projectDir, 'memory', 'tools.md'), defaultToolsMd);
+
+          // Clear conversation history
+          conversations.delete(chatId);
+          clearToolLog();
+
+          // Reset onboarding state
+          const currentConfig = loadConfig() || {};
+          if (currentConfig.onboarding) {
+            delete currentConfig.onboarding[chatId];
+            saveConfig(currentConfig);
+          }
+
+          await bot.sendMessage(chatId, '✅ *Purge complete!*\n\n• Memory files reset to defaults\n• Conversation cleared\n• Onboarding reset\n\nYour API keys and config are preserved.\n\nSend /start to begin fresh onboarding!', { parse_mode: 'Markdown' });
+        } catch (error) {
+          console.log(chalk.red(`  Purge error: ${error.message}`));
+          await bot.sendMessage(chatId, `❌ Purge failed: ${error.message}`);
+        }
+      }
+    };
+
+    bot.on('message', confirmListener);
+
+    // Auto-remove listener after 30 seconds
+    setTimeout(() => {
+      bot.removeListener('message', confirmListener);
+    }, 30000);
   });
 
   // Handle /model command to change AI model
@@ -283,14 +442,14 @@ export async function startBot(config) {
         return;
       }
 
-      // Build model buttons (2 per row for better display)
+      // Build model buttons (use index to keep callback_data under 64 bytes)
       const buttons = [];
       for (let i = 0; i < models.length; i += 1) {
         const model = models[i];
         const shortName = model.name.split('(')[0].trim();
         buttons.push([{
           text: `${shortName} - ${model.pricing}`,
-          callback_data: `model_select:${provider}:${model.value}`,
+          callback_data: `model_select:${provider}:${i}`,
         }]);
       }
       buttons.push([{ text: '⬅️ Back', callback_data: 'model_back' }]);
@@ -310,8 +469,14 @@ export async function startBot(config) {
 
     // Model selection
     if (data.startsWith('model_select:')) {
-      const [, provider, ...modelParts] = data.split(':');
-      const model = modelParts.join(':'); // Handle model names with colons
+      const [, provider, modelIndex] = data.split(':');
+      const models = MODELS[provider] || [];
+      const model = models[parseInt(modelIndex)]?.value;
+
+      if (!model) {
+        await bot.answerCallbackQuery(query.id, { text: 'Invalid model selection' });
+        return;
+      }
 
       // Update config
       config.ai.provider = provider;
@@ -1429,7 +1594,19 @@ expect {
     if (needsOnboarding(chatId)) {
       bot.sendChatAction(chatId, 'typing');
       const result = processOnboarding(chatId, userMessage);
-      await bot.sendMessage(chatId, result.message);
+
+      // Delete user message if it contains sensitive info (API key)
+      if (result.deleteUserMessage) {
+        try {
+          await bot.deleteMessage(chatId, msg.message_id);
+        } catch (err) {
+          // Ignore if can't delete (might be old message or permissions issue)
+        }
+      }
+
+      await bot.sendMessage(chatId, result.message, { parse_mode: 'Markdown' }).catch(() => {
+        bot.sendMessage(chatId, result.message);
+      });
 
       // Send any pending notifications (memory updates from onboarding)
       const notifications = getAndClearNotifications();
@@ -1438,9 +1615,10 @@ expect {
         await bot.sendMessage(chatId, notifMsg);
       }
 
-      // If onboarding just completed, reload config to get new bot name
+      // If onboarding just completed, reload config to get new bot name and AI settings
       if (result.complete) {
         Object.assign(config, loadConfig());
+        drawUI(config, 'online');
       }
       return;
     }
